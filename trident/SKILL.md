@@ -1,3 +1,8 @@
+---
+name: trident
+description: Three-pronged code review pipeline that combines broad scanning, independent verification, and evidence-based judgment.
+---
+
 # Trident
 
 Three-pronged code review pipeline: **Scan → Verify → Judge**.

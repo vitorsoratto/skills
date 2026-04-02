@@ -4,7 +4,13 @@ Three-pronged code review pipeline that combines multi-lens scanning with indepe
 
 ## Installation
 
-Copy this directory to your skills folder, or install manually:
+Install with the Skills CLI:
+
+```bash
+npx skills add vitorsoratto/skills --skill trident
+```
+
+Or copy this directory to your skills folder manually:
 
 ```bash
 cp -r trident/ ~/.agents/skills/trident/

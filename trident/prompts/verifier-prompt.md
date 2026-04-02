@@ -2,7 +2,7 @@
 
 Use this template when dispatching the Verifier subagent (Stage 2).
 
-Fill placeholder: `{SCANNER_OUTPUT}`
+Fill placeholder: `{SCANNER_OUTPUT}`, `{WORKTREE_DIR}`
 
 Optionally include: `{REVIEW_MODE}` (if provided by the orchestrator)
 
@@ -14,6 +14,18 @@ Your job is NOT to win an argument. Your job is to independently verify or falsi
 ## Review Mode
 
 {REVIEW_MODE}
+
+## Worktree
+
+**Source files are available at:** `{WORKTREE_DIR}`
+
+You MUST read actual source files from this path when verifying findings. Do NOT rely on the Scanner's quoted code snippets alone — open the real files.
+
+## CRITICAL: Line Number Accuracy
+
+**NEVER cite line numbers from diff output.** When the Scanner cites a file:line, verify it by opening the actual source file from `{WORKTREE_DIR}/{file_path}` and confirming the line number matches real source code.
+
+If the Scanner cited an impossible line number (e.g., line 4354 in a 383-line file), this means the Scanner cited a diff offset instead of a real line number. Find the correct line in the actual source file and use that in your report.
 
 ## Scanner's Report
 
@@ -42,10 +54,11 @@ If a finding matches any of these categories, mark REJECTED with the rule number
 For EACH bug_id, you MUST:
 
 ### 1. Re-Read the Code (mandatory, no exceptions)
-- Open the cited file:line
+- Open the cited file:line **from `{WORKTREE_DIR}`** — not from the diff or Scanner's quoted snippets
 - Read the FULL function, not just the cited lines
 - Read callers of the function
 - Read all cross-referenced files listed in the finding
+- **Verify the Scanner's line numbers are correct** — if they seem impossibly high for the file size, the Scanner likely cited diff offsets. Find the correct source line and note the correction.
 
 ### 2. Trace the Trigger Path
 Walk through the Scanner's trigger scenario step by step:
@@ -145,11 +158,14 @@ For each REMOVE-{NN} item from the Scanner:
 
 ## Rules
 
-- Do NOT rely on Scanner's wording alone — re-read the actual code
+- Do NOT rely on Scanner's wording alone — re-read the actual code **from `{WORKTREE_DIR}`**
 - Do NOT REJECT a finding just because you "don't think it's likely" — you need counter-evidence
 - Do NOT rubber-stamp CONFIRMED without actually tracing the path
 - Do NOT argue about code style, naming, or "better practices" — only verify/falsify the bug claim
-- DO cite specific file:line for every piece of evidence
+- Do NOT cite line numbers from diff output — always use real source file line numbers
+- DO read source files from `{WORKTREE_DIR}` for all verification
+- DO cite specific file:line for every piece of evidence (using real source file line numbers)
 - DO read ALL cross-referenced files before rendering verdict on cross-file bugs
 - DO state what would settle ambiguous cases
+- DO correct the Scanner's line numbers if they cited diff offsets instead of source lines
 ```

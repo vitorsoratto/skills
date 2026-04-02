@@ -82,6 +82,33 @@ Trident supports 4 review modes. Determine which one applies based on user input
 10. Default                                    → mode = unstaged
 ```
 
+#### Step 1.5: Create Worktree for Isolation
+
+For `pr` and `range` modes, create a git worktree so the review runs in an isolated checkout. This keeps the user's current working tree intact and enables parallel reviews of multiple PRs/branches.
+
+**Mode: `pr`**
+```bash
+WORKTREE_DIR="/tmp/trident-review-pr-${PR_NUMBER}-$(date +%s)"
+git worktree add "$WORKTREE_DIR" --detach
+# Inside the worktree, check out the PR branch
+cd "$WORKTREE_DIR"
+gh pr checkout ${PR_NUMBER}
+```
+
+**Mode: `range`**
+```bash
+WORKTREE_DIR="/tmp/trident-review-range-$(echo ${A}..${B} | tr '/' '-')-$(date +%s)"
+git worktree add "$WORKTREE_DIR" "${B}"
+```
+
+**Mode: `unstaged` / `staged` / `all-local` / `dir`**
+No worktree needed — these modes operate on the current working tree. Set `WORKTREE_DIR` to the current repository root:
+```bash
+WORKTREE_DIR="$(git rev-parse --show-toplevel)"
+```
+
+Store `WORKTREE_DIR` — it will be passed to all three agents so they can read actual source files with real line numbers.
+
 #### Step 2: Gather Diff and Context
 
 Based on the detected mode, run the appropriate commands:
@@ -111,8 +138,8 @@ git diff HEAD
 ```bash
 # Fetch PR metadata for context
 gh pr view {N} --json title,body,author,baseRefName,headRefName,files,additions,deletions
-# Fetch the diff
-gh pr diff {N}
+# Fetch the diff (from within the worktree)
+cd "$WORKTREE_DIR" && gh pr diff {N}
 ```
 
 **Mode: `range`**
@@ -128,10 +155,12 @@ git diff {A}..{B}
 find {DIR} -type f -name "*.ts" -o -name "*.py" -o -name "*.go" ... | head -50
 ```
 
+**Important:** Save the diff output for context (so agents know what changed), but agents will read actual source files from `WORKTREE_DIR` for evidence and line number citations.
+
 #### Step 3: Enrich Context
 
 For ALL modes, also gather:
-1. Use `rg` or `grep` to find related modules, usages, and contracts if needed
+1. Use `rg` or `grep` to find related modules, usages, and contracts if needed (search within `WORKTREE_DIR`)
 2. Identify entry points, ownership boundaries, and critical paths (auth, payments, data writes)
 3. For `pr` mode: include PR title, description, author intent, and base branch in `{CONTEXT}`
 4. For `range` mode: include commit messages in `{CONTEXT}` for intent understanding
@@ -146,10 +175,11 @@ For ALL modes, also gather:
 
 #### Step 5: Set Scanner Placeholders
 
-Construct `{TARGET}` and `{CONTEXT}` for the Scanner:
+Construct `{TARGET}`, `{CONTEXT}`, and `{WORKTREE_DIR}` for the Scanner:
 
 - **`{TARGET}`**: The file list, diff content, or directory path to scan
 - **`{CONTEXT}`**: Review mode, PR metadata (if applicable), commit messages (if range), what the code does, areas of concern
+- **`{WORKTREE_DIR}`**: Absolute path to the worktree (or repo root for local modes). Agents MUST use this path to read source files and cite real line numbers.
 
 ### Phase 2: Scanner (Agent 1)
 
@@ -157,6 +187,7 @@ Dispatch a subagent using `./prompts/scanner-prompt.md` as the prompt template.
 
 - Fill `{TARGET}` with the scope (files, directories, modules, or entire repo)
 - Fill `{CONTEXT}` with relevant context (what the code does, recent changes, areas of concern)
+- Fill `{WORKTREE_DIR}` with the absolute path to the worktree (or repo root for local modes)
 - The Scanner performs multi-lens scanning (SOLID, security, quality, dead code) with forced counterarguments
 - Wait for complete output before proceeding
 
@@ -171,13 +202,14 @@ Task tool:
 Dispatch a subagent using `./prompts/verifier-prompt.md` as the prompt template.
 
 - Fill `{SCANNER_OUTPUT}` with the complete output from Phase 2
-- Agent has full codebase access and MUST re-read cited code independently
+- Fill `{WORKTREE_DIR}` with the same worktree path used for the Scanner
+- Agent has full codebase access and MUST re-read cited code independently from `WORKTREE_DIR`
 - Wait for complete output before proceeding
 
 ```
 Task tool:
   description: "Trident Verifier: validate findings"
-  prompt: [contents of ./prompts/verifier-prompt.md with SCANNER_OUTPUT filled]
+  prompt: [contents of ./prompts/verifier-prompt.md with SCANNER_OUTPUT and WORKTREE_DIR filled]
 ```
 
 ### Phase 4: Arbiter (Agent 3)
@@ -186,18 +218,27 @@ Dispatch a subagent using `./prompts/arbiter-prompt.md` as the prompt template.
 
 - Fill `{SCANNER_OUTPUT}` with output from Phase 2
 - Fill `{VERIFIER_OUTPUT}` with output from Phase 3
-- Agent has full codebase access and re-inspects disputed/high-severity findings
+- Fill `{WORKTREE_DIR}` with the same worktree path used for Scanner and Verifier
+- Agent has full codebase access and re-inspects disputed/high-severity findings from `WORKTREE_DIR`
 - Wait for complete output
 
 ```
 Task tool:
   description: "Trident Arbiter: render verdicts"
-  prompt: [contents of ./prompts/arbiter-prompt.md with both outputs filled]
+  prompt: [contents of ./prompts/arbiter-prompt.md with all outputs and WORKTREE_DIR filled]
 ```
 
 ### Phase 5: Present to User
 
 After collecting the Arbiter's final verdicts, present them in the structured output format below. **Do NOT implement any changes until user explicitly confirms.**
+
+**Worktree Cleanup:** After presenting findings (or if the pipeline is aborted), clean up the worktree if one was created:
+```bash
+# Only for pr/range modes where a worktree was created in /tmp
+if [[ "$WORKTREE_DIR" == /tmp/trident-review-* ]]; then
+  git worktree remove "$WORKTREE_DIR" --force 2>/dev/null
+fi
+```
 
 ## Severity Levels
 

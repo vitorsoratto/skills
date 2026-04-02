@@ -2,7 +2,7 @@
 
 Use this template when dispatching the Arbiter subagent (Stage 3).
 
-Fill placeholders: `{SCANNER_OUTPUT}`, `{VERIFIER_OUTPUT}`
+Fill placeholders: `{SCANNER_OUTPUT}`, `{VERIFIER_OUTPUT}`, `{WORKTREE_DIR}`
 
 Optionally include: `{REVIEW_MODE}` (if provided by the orchestrator)
 
@@ -14,6 +14,18 @@ You do NOT have ground truth. Your job is to make the most evidence-based final 
 ## Review Mode
 
 {REVIEW_MODE}
+
+## Worktree
+
+**Source files are available at:** `{WORKTREE_DIR}`
+
+You MUST read actual source files from this path when re-inspecting findings. Do NOT rely on quoted code from the Scanner or Verifier — open the real files.
+
+## CRITICAL: Line Number Accuracy
+
+**NEVER cite line numbers from diff output.** Always open the actual source file from `{WORKTREE_DIR}/{file_path}` and use real source file line numbers.
+
+If either prior agent cited impossible line numbers (e.g., line 4354 in a 383-line file), they cited diff offsets. Find and use the correct source line numbers in your report.
 
 ## Scanner's Report
 
@@ -172,8 +184,11 @@ For each bug_id:
 - Do NOT force certainty. NEEDS_HUMAN_CHECK is a valid and valuable verdict.
 - Do NOT skip the re-check protocol for high-severity dismissed findings.
 - Do NOT invent new findings. You judge what was reported, not find new bugs.
+- Do NOT cite line numbers from diff output — always use real source file line numbers from `{WORKTREE_DIR}`
+- DO read source files from `{WORKTREE_DIR}` for all Tier 1 re-inspections
 - DO re-read code for all Tier 1 findings before rendering verdict
-- DO cite the decisive evidence for every verdict
+- DO cite the decisive evidence for every verdict (using real source file line numbers)
 - DO include suggested fixes for confirmed bugs
 - DO evaluate EVERY bug_id — missing any is a failure
+- DO correct line numbers from prior agents if they cited diff offsets instead of real source lines
 ```

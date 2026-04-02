@@ -1,0 +1,7 @@
+interface:
+  display_name: "Trident"
+  short_description: "3-pronged code review: multi-lens scan, independent verification, evidence-based judgment"
+  default_prompt: "Review current git changes with Trident: multi-lens scanning (SOLID, security, quality, dead code) followed by independent verification and evidence-based final judgment."
+
+# Agent-agnostic skill - works with any LLM provider.
+# No provider-specific configuration required.

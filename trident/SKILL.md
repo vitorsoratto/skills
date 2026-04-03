@@ -5,115 +5,166 @@ description: Three-pronged code review pipeline that combines broad scanning, in
 
 # Trident
 
-Three-pronged code review pipeline: **Scan → Verify → Judge**.
+Three-pronged code review pipeline: **Scan -> Verify -> Judge**.
 
-Combines multi-lens scanning (SOLID, security, quality, dead code) with an independent 3-agent verification pipeline to produce high-confidence findings with minimal false positives.
+Combines multi-lens scanning with independent verification to produce high-confidence findings while keeping false positives low.
 
-**Core principle:** Scan broadly, verify independently, judge on evidence.
+**Core principle:** Scan broadly, verify independently, judge on evidence from real source files.
 
 ## When to Use
 
-- Code review of git changes (PRs, commits, staged diffs)
-- Deep codebase audit for bugs, security issues, logic errors
+- Code review of git changes, PRs, commit ranges, and staged diffs
+- Deep codebase audit for bugs, security issues, and logic errors
 - Post-implementation review of complex features
-- Security audit before release
-- Any review where false positives are worse than missed minor issues
+- Security or correctness review before release
+- Reviews where false positives are more expensive than missing minor style issues
 
-**Don't use for:** Style-only reviews, trivial one-line changes, test coverage analysis.
+**Do not use for:** style-only reviews, trivial one-line changes, or generic "improve code quality" requests without a review target.
 
-## Pipeline
+## Review Axes
 
-```dot
-digraph pipeline {
-    rankdir=TB;
+Trident has two separate axes:
 
-    "PHASE 1: Scope & Preflight" [shape=box];
-    "PHASE 2: Dispatch Scanner (./prompts/scanner-prompt.md)" [shape=box];
-    "Collect Scanner output" [shape=box];
-    "PHASE 3: Dispatch Verifier (./prompts/verifier-prompt.md)" [shape=box];
-    "Collect Verifier output" [shape=box];
-    "PHASE 4: Dispatch Arbiter (./prompts/arbiter-prompt.md)" [shape=box];
-    "Collect Arbiter output" [shape=box];
-    "PHASE 5: Present findings to user" [shape=box];
-    "Await user decision" [shape=doublecircle];
+1. **Review mode**: what to review
+2. **Review depth**: how aggressively to review it
 
-    "PHASE 1: Scope & Preflight" -> "PHASE 2: Dispatch Scanner (./prompts/scanner-prompt.md)";
-    "PHASE 2: Dispatch Scanner (./prompts/scanner-prompt.md)" -> "Collect Scanner output";
-    "Collect Scanner output" -> "PHASE 3: Dispatch Verifier (./prompts/verifier-prompt.md)";
-    "PHASE 3: Dispatch Verifier (./prompts/verifier-prompt.md)" -> "Collect Verifier output";
-    "Collect Verifier output" -> "PHASE 4: Dispatch Arbiter (./prompts/arbiter-prompt.md)";
-    "PHASE 4: Dispatch Arbiter (./prompts/arbiter-prompt.md)" -> "Collect Arbiter output";
-    "Collect Arbiter output" -> "PHASE 5: Present findings to user";
-    "PHASE 5: Present findings to user" -> "Await user decision";
-}
+### Review Modes
+
+Trident supports **6 review modes**:
+
+| Mode | Trigger | Primary Source | Notes |
+|------|---------|----------------|-------|
+| `unstaged` | Default when no target is specified | `git diff` | Working tree changes not yet staged |
+| `staged` | User says "staged" or unstaged diff is empty | `git diff --cached` | Changes staged for commit |
+| `all-local` | User says "all local" or "everything" | `git diff HEAD` | Staged plus unstaged |
+| `pr` | User provides PR URL/number or says "review PR" | `gh pr diff {N}` | Remote pull request review |
+| `range` | User provides `A..B`, branch, tag, or "since X" | `git diff {A}..{B}` | Multi-commit review |
+| `dir` | User provides a directory path | Source files in that path | Full directory audit |
+
+### Review Depths
+
+| Depth | Trigger | Pipeline | Use When |
+|-------|---------|----------|----------|
+| `quick` | User says "quick" or auto-selected for small local diffs | Scanner -> Verifier | Fast triage, small diffs, day-to-day reviews |
+| `deep` | User says "deep"/"full" or auto-selected for broad/risky scopes | Scanner -> Verifier -> Arbiter | PRs, ranges, directories, risky code, or disputed findings |
+
+**Auto-depth selection:**
+
+```text
+1. If user explicitly says "quick" or "fast" -> quick
+2. If user explicitly says "deep", "full", or "thorough" -> deep
+3. If mode is pr, range, or dir -> deep
+4. If changed files > 8 or changed lines > 250 -> deep
+5. If auth, billing, persistence, migrations, or concurrency paths are involved -> deep
+6. Otherwise -> quick
 ```
 
 ## How to Execute
 
-### Phase 1: Scope & Preflight
+### Phase 1: Scope and Preflight
 
-Before dispatching agents, determine the review mode and gather context.
+Before dispatching agents, determine both `REVIEW_MODE` and `REVIEW_DEPTH`.
 
 #### Step 1: Detect Review Mode
 
-Trident supports 4 review modes. Determine which one applies based on user input or auto-detection:
+Use this order:
 
-| Mode | Trigger | Diff Command | Notes |
-|------|---------|--------------|-------|
-| **`unstaged`** | Default — no target specified | `git diff` | Working tree changes not yet staged |
-| **`staged`** | User says "staged" or unstaged diff is empty | `git diff --cached` | Changes staged for commit |
-| **`all-local`** | User says "all local" or "everything" | `git diff HEAD` | Staged + unstaged combined |
-| **`pr`** | User provides PR URL, PR number, or says "review PR" | `gh pr diff {N}` | Pull request diff (remote) |
-| **`range`** | User provides commit range, branch name, or says "since X" | `git diff {A}..{B}` | Two commits, tags, or branches |
-| **`dir`** | User provides directory path or says "review src/" | Read all files in path | Entire directory/module audit |
-
-**Auto-detection logic:**
-
-```
-1. Did user provide a GitHub PR URL?           → mode = pr
-2. Did user provide a PR number (#123)?        → mode = pr
-3. Did user say "PR" or "pull request"?        → mode = pr (fetch current branch's PR via `gh pr view --json number`)
-4. Did user provide a commit range (abc123..def456)? → mode = range
-5. Did user provide a branch name?             → mode = range (resolve to main..branch)
-6. Did user say "since" / "from" / "after"?    → mode = range (e.g., git diff v1.2..HEAD)
-7. Did user provide a directory path?          → mode = dir
-8. Did user say "staged"?                      → mode = staged
-9. Did user say "all" / "everything"?          → mode = all-local
-10. Default                                    → mode = unstaged
+```text
+1. GitHub PR URL -> pr
+2. PR number (#123) -> pr
+3. "PR" or "pull request" -> pr
+4. Commit range (abc123..def456) -> range
+5. Branch/tag comparison language -> range
+6. Directory path -> dir
+7. "staged" -> staged
+8. "all" or "everything" -> all-local
+9. Default -> unstaged
 ```
 
-#### Step 1.5: Create Worktree for Isolation
+#### Step 2: Preflight Tooling
 
-For `pr` and `range` modes, create a git worktree so the review runs in an isolated checkout. This keeps the user's current working tree intact and enables parallel reviews of multiple PRs/branches.
+Validate prerequisites before gathering diff context:
+
+```bash
+git rev-parse --show-toplevel
+git status -sb
+command -v rg
+```
+
+Additional checks by mode:
+
+- `pr`: require `gh` and verify it can access the target PR
+- `range`: verify both refs resolve with `git rev-parse --verify`
+- `dir`: verify the directory exists inside the repository
+
+If a prerequisite fails:
+
+- Do not proceed with the full pipeline
+- Explain the missing dependency or invalid input
+- Offer the closest working fallback, such as reviewing a local diff instead
+
+#### Step 3: Create a Reliable Source Root
+
+Track:
+
+- `REVIEW_MODE`
+- `REVIEW_DEPTH`
+- `REPO_ROOT`
+- `WORKTREE_DIR`
+- `TRIDENT_CREATED_WORKTREE`
+
+Initialize:
+
+```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+WORKTREE_DIR="$REPO_ROOT"
+TRIDENT_CREATED_WORKTREE=0
+```
+
+For `pr` and `range`, create an isolated worktree in both `quick` and `deep` mode so all agents read real source files without disturbing the user's checkout.
 
 **Mode: `pr`**
+
 ```bash
 WORKTREE_DIR="/tmp/trident-review-pr-${PR_NUMBER}-$(date +%s)"
 git worktree add "$WORKTREE_DIR" --detach
-# Inside the worktree, check out the PR branch
+TRIDENT_CREATED_WORKTREE=1
 cd "$WORKTREE_DIR"
-gh pr checkout ${PR_NUMBER}
+gh pr checkout "${PR_NUMBER}"
 ```
 
 **Mode: `range`**
+
 ```bash
-WORKTREE_DIR="/tmp/trident-review-range-$(echo ${A}..${B} | tr '/' '-')-$(date +%s)"
+WORKTREE_DIR="/tmp/trident-review-range-$(echo "${A}..${B}" | tr '/' '-')-$(date +%s)"
 git worktree add "$WORKTREE_DIR" "${B}"
+TRIDENT_CREATED_WORKTREE=1
 ```
 
-**Mode: `unstaged` / `staged` / `all-local` / `dir`**
-No worktree needed — these modes operate on the current working tree. Set `WORKTREE_DIR` to the current repository root:
+For `unstaged`, `staged`, `all-local`, and `dir`, keep `WORKTREE_DIR="$REPO_ROOT"`.
+
+#### Step 4: Always Clean Up
+
+Register cleanup immediately after worktree creation so cleanup happens on success, failure, interrupt, or aborted pipeline:
+
 ```bash
-WORKTREE_DIR="$(git rev-parse --show-toplevel)"
+cleanup_trident_worktree() {
+  if [[ "${TRIDENT_CREATED_WORKTREE}" == "1" && "$WORKTREE_DIR" == /tmp/trident-review-* ]]; then
+    git worktree remove "$WORKTREE_DIR" --force >/dev/null 2>&1 || true
+  fi
+}
+
+trap cleanup_trident_worktree EXIT INT TERM
 ```
 
-Store `WORKTREE_DIR` — it will be passed to all three agents so they can read actual source files with real line numbers.
+Do not postpone cleanup until after reporting. Treat it like a `finally` block.
 
-#### Step 2: Gather Diff and Context
+### Phase 2: Gather Target and Context
 
-Based on the detected mode, run the appropriate commands:
+Gather executable context commands based on `REVIEW_MODE`.
 
 **Mode: `unstaged`**
+
 ```bash
 git status -sb
 git diff --stat
@@ -121,6 +172,7 @@ git diff
 ```
 
 **Mode: `staged`**
+
 ```bash
 git status -sb
 git diff --cached --stat
@@ -128,6 +180,7 @@ git diff --cached
 ```
 
 **Mode: `all-local`**
+
 ```bash
 git status -sb
 git diff HEAD --stat
@@ -135,234 +188,195 @@ git diff HEAD
 ```
 
 **Mode: `pr`**
+
 ```bash
-# Fetch PR metadata for context
-gh pr view {N} --json title,body,author,baseRefName,headRefName,files,additions,deletions
-# Fetch the diff (from within the worktree)
-cd "$WORKTREE_DIR" && gh pr diff {N}
+gh pr view "${PR_NUMBER}" --json title,body,author,baseRefName,headRefName,files,additions,deletions
+cd "$WORKTREE_DIR" && gh pr diff "${PR_NUMBER}"
 ```
 
 **Mode: `range`**
+
 ```bash
-git log --oneline {A}..{B}
-git diff --stat {A}..{B}
-git diff {A}..{B}
+git log --oneline "${A}..${B}"
+git diff --stat "${A}..${B}"
+git diff "${A}..${B}"
 ```
 
 **Mode: `dir`**
+
 ```bash
-# No diff — scan all files in the target directory
-find {DIR} -type f -name "*.ts" -o -name "*.py" -o -name "*.go" ... | head -50
+rg --files "{DIR}" -g '*.ts' -g '*.tsx' -g '*.js' -g '*.jsx' -g '*.py' -g '*.go' -g '*.rb' -g '*.java' -g '*.kt' -g '*.rs' -g '*.php' | head -50
 ```
 
-**Important:** Save the diff output for context (so agents know what changed), but agents will read actual source files from `WORKTREE_DIR` for evidence and line number citations.
+For all modes, enrich context with:
 
-#### Step 3: Enrich Context
+1. Related call sites and contracts using `rg`
+2. Entry points, write paths, auth boundaries, and transaction boundaries
+3. PR metadata for `pr`
+4. Commit messages and intent for `range`
+5. High-risk paths such as auth, payments, persistence, migrations, or concurrency
 
-For ALL modes, also gather:
-1. Use `rg` or `grep` to find related modules, usages, and contracts if needed (search within `WORKTREE_DIR`)
-2. Identify entry points, ownership boundaries, and critical paths (auth, payments, data writes)
-3. For `pr` mode: include PR title, description, author intent, and base branch in `{CONTEXT}`
-4. For `range` mode: include commit messages in `{CONTEXT}` for intent understanding
+### Phase 3: Handle Scope Size Explicitly
 
-#### Step 4: Handle Edge Cases
+Use these edge-case rules:
 
-- **Empty diff**: If diff is empty in `unstaged` mode, auto-try `staged` mode. If both empty, ask user if they want `pr` or `range` mode.
-- **Large diff (>500 lines)**: Summarize by file first, then run pipeline in batches by module/feature area.
-- **Mixed concerns**: Group findings by logical feature, not just file order.
-- **PR not found**: If `gh pr diff` fails, suggest user check PR number or provide diff manually.
-- **Branch divergence**: For `range` mode, warn if branches have diverged significantly (>100 commits).
+- **Empty diff**: If `unstaged` is empty, auto-try `staged`. If both are empty, ask whether to switch to `pr`, `range`, or `dir`.
+- **PR lookup failure**: report the exact `gh` failure and ask for a PR URL/number or local diff fallback.
+- **Invalid range**: stop and ask for a valid `A..B`.
+- **Large scope**: if changed files > 25, changed lines > 800, or `dir` mode returns > 80 candidate files, batch the review.
 
-#### Step 5: Set Scanner Placeholders
+#### Large-Scope Batching Procedure
 
-Construct `{TARGET}`, `{CONTEXT}`, and `{WORKTREE_DIR}` for the Scanner:
+When batching is required:
 
-- **`{TARGET}`**: The file list, diff content, or directory path to scan
-- **`{CONTEXT}`**: Review mode, PR metadata (if applicable), commit messages (if range), what the code does, areas of concern
-- **`{WORKTREE_DIR}`**: Absolute path to the worktree (or repo root for local modes). Agents MUST use this path to read source files and cite real line numbers.
+1. Group files by top-level module or feature area.
+2. Create batches capped at **12 files or 400 changed lines**, whichever comes first.
+3. Run **Scanner per batch** with `BATCH_ID` in `{CONTEXT}`.
+4. Merge Scanner outputs into one provisional finding set.
+5. Dedupe provisional findings using this key:
+   - normalized category
+   - normalized file path
+   - normalized trigger or claim
+6. Run one Verifier pass on the deduped set.
+7. In `deep` mode, run Arbiter only on:
+   - all P0 and P1 findings
+   - all disputed findings
+   - any finding with verifier confidence `low`
 
-### Phase 2: Scanner (Agent 1)
+Do not send duplicated findings from separate batches to the final report.
 
-Dispatch a subagent using `./prompts/scanner-prompt.md` as the prompt template.
+### Phase 4: Build Prompt Placeholders
 
-- Fill `{TARGET}` with the scope (files, directories, modules, or entire repo)
-- Fill `{CONTEXT}` with relevant context (what the code does, recent changes, areas of concern)
-- Fill `{WORKTREE_DIR}` with the absolute path to the worktree (or repo root for local modes)
-- The Scanner performs multi-lens scanning (SOLID, security, quality, dead code) with forced counterarguments
-- Wait for complete output before proceeding
+Construct these placeholders for every stage:
 
-```
-Task tool:
-  description: "Trident Scanner: deep scan of {TARGET}"
-  prompt: [contents of ./prompts/scanner-prompt.md with placeholders filled]
-```
+- `{TARGET}`: diff text, file list, or directory scope
+- `{CONTEXT}`: review metadata, intent, and risk notes
+- `{REVIEW_MODE}`: one of the 6 supported modes
+- `{REVIEW_DEPTH}`: `quick` or `deep`
+- `{WORKTREE_DIR}`: absolute path to the source root agents must inspect
 
-### Phase 3: Verifier (Agent 2)
+### Phase 5: Dispatch Pipeline
 
-Dispatch a subagent using `./prompts/verifier-prompt.md` as the prompt template.
+#### Quick Mode
 
-- Fill `{SCANNER_OUTPUT}` with the complete output from Phase 2
-- Fill `{WORKTREE_DIR}` with the same worktree path used for the Scanner
-- Agent has full codebase access and MUST re-read cited code independently from `WORKTREE_DIR`
-- Wait for complete output before proceeding
+Run:
 
-```
-Task tool:
-  description: "Trident Verifier: validate findings"
-  prompt: [contents of ./prompts/verifier-prompt.md with SCANNER_OUTPUT and WORKTREE_DIR filled]
-```
+1. Scanner
+2. Verifier
 
-### Phase 4: Arbiter (Agent 3)
+Use quick mode rules:
 
-Dispatch a subagent using `./prompts/arbiter-prompt.md` as the prompt template.
+- Focus on changed files and immediate cross-file effects
+- Cap findings at **6**
+- Skip dead-code hunting unless it is obvious from the touched scope
+- If Verifier returns any `insufficient_evidence`, any P0/P1, or more than 2 rejected scanner findings, recommend rerunning in `deep` mode
 
-- Fill `{SCANNER_OUTPUT}` with output from Phase 2
-- Fill `{VERIFIER_OUTPUT}` with output from Phase 3
-- Fill `{WORKTREE_DIR}` with the same worktree path used for Scanner and Verifier
-- Agent has full codebase access and re-inspects disputed/high-severity findings from `WORKTREE_DIR`
-- Wait for complete output
+#### Deep Mode
 
-```
-Task tool:
-  description: "Trident Arbiter: render verdicts"
-  prompt: [contents of ./prompts/arbiter-prompt.md with all outputs and WORKTREE_DIR filled]
-```
+Run:
 
-### Phase 5: Present to User
+1. Scanner
+2. Verifier
+3. Arbiter
 
-After collecting the Arbiter's final verdicts, present them in the structured output format below. **Do NOT implement any changes until user explicitly confirms.**
+Use deep mode rules:
 
-**Worktree Cleanup:** After presenting findings (or if the pipeline is aborted), clean up the worktree if one was created:
-```bash
-# Only for pr/range modes where a worktree was created in /tmp
-if [[ "$WORKTREE_DIR" == /tmp/trident-review-* ]]; then
-  git worktree remove "$WORKTREE_DIR" --force 2>/dev/null
-fi
-```
+- Full multi-lens scan
+- Up to **15 findings**
+- Dead-code and removal candidates enabled
+- Arbiter re-inspects every disputed high-severity item and any finding escalated by the Verifier
 
-## Severity Levels
+### Phase 6: Present to User
 
-| Level | Name | Description | Action |
-|-------|------|-------------|--------|
-| **P0** | Critical | Security vulnerability, data loss risk, correctness bug | Must block merge |
-| **P1** | High | Logic error, significant SOLID violation, performance regression | Should fix before merge |
-| **P2** | Medium | Code smell, maintainability concern, minor SOLID violation | Fix in this PR or create follow-up |
-| **P3** | Low | Style, naming, minor suggestion | Optional improvement |
+After the final stage:
+
+- In `quick` mode, present the Verifier-backed review and clearly flag whether a deep review is recommended.
+- In `deep` mode, present the Arbiter-backed verdicts.
+- Do **not** implement fixes until the user explicitly asks for changes.
 
 ## Shared Output Contract
 
-All agents use a shared `bug_id` keyed schema. Each stage appends its fields:
+All agents must emit a single fenced `yaml` block and preserve stable fields across stages.
 
-| Field | Scanner | Verifier | Arbiter |
-|-------|---------|----------|---------|
-| `bug_id` | Creates | Preserves | Preserves |
-| `title` | Creates | Preserves | Preserves |
-| `location` | Creates | Preserves | Preserves |
-| `severity` | Initial (P0-P3) | May revise | Final |
-| `category` | Creates (security/solid/quality/logic/concurrency/dead-code/other) | Preserves | Preserves |
-| `tier` | CONFIRMED/SUSPICIOUS | — | — |
-| `status` | — | CONFIRMED/REJECTED/INSUFFICIENT_EVIDENCE | — |
-| `verdict` | — | — | REAL_BUG/NOT_A_BUG/NEEDS_HUMAN_CHECK |
-| `confidence` | Creates | Creates | Creates |
+Required top-level keys:
 
-## Output Format
-
-Structure your final presentation as follows:
-
-```markdown
-## Trident Review
-
-**Files reviewed**: X files, Y lines changed
-**Overall assessment**: [APPROVE / REQUEST_CHANGES / COMMENT]
-
----
-
-### Confirmed Bugs (REAL_BUG)
-
-| Bug ID | Severity | Confidence | Category | Title | Location |
-|--------|----------|------------|----------|-------|----------|
-| BUG-01 | P0 | HIGH | security | ... | `file:line` |
-
-### Dismissed (NOT_A_BUG)
-
-| Bug ID | Original Severity | Reason |
-|--------|-------------------|--------|
-| ... | ... | ... |
-
-### Needs Human Review (NEEDS_HUMAN_CHECK)
-
-| Bug ID | Severity | What Would Settle It |
-|--------|----------|---------------------|
-| ... | ... | ... |
-
----
-
-### Removal / Iteration Plan
-(if applicable — from Scanner's dead code analysis)
-
----
-
-### Additional Suggestions
-(optional improvements, not blocking)
-
----
-
-## Next Steps
-
-I found X issues (P0: _, P1: _, P2: _, P3: _).
-
-**How would you like to proceed?**
-
-1. **Fix all** — I'll implement all suggested fixes
-2. **Fix P0/P1 only** — Address critical and high priority issues
-3. **Fix specific items** — Tell me which issues to fix
-4. **No changes** — Review complete, no implementation needed
-
-Please choose an option or provide specific instructions.
+```yaml
+schema_version: trident-v2
+stage: scanner
+review_mode: unstaged
+review_depth: quick
+findings: []
+removal_candidates: []
+summary: {}
 ```
 
-**Inline comments**: Use this format for file-specific findings:
-```
-::code-comment{file="path/to/file.ts" line="42" severity="P1"}
-Description of the issue and suggested fix.
-::
+Each item in `findings` must preserve these stable fields:
+
+```yaml
+- bug_id: BUG-01
+  title: Short bug title
+  location: path/to/file.ext:123
+  category: security
+  severity: P1
+  scanner: {}
+  verifier: {}
+  arbiter: {}
 ```
 
-**Clean review**: If no issues found, explicitly state:
-- What was checked
-- Areas not covered (e.g., "Did not verify database migrations")
-- Residual risks or recommended follow-up tests
+Stage-specific fields:
+
+- `scanner.status`: `confirmed` or `suspicious`
+- `verifier.status`: `confirmed`, `rejected`, or `insufficient_evidence`
+- `arbiter.verdict`: `real_bug`, `not_a_bug`, or `needs_human_check`
+
+Only append stage-specific data. Do not rename keys between stages.
+
+## Final User Output
+
+Convert the final YAML-backed result into a short human-facing report:
+
+- Files reviewed and overall assessment
+- Confirmed bugs
+- Dismissed findings
+- Needs human review
+- Removal candidates if applicable
+- Whether a deeper rerun is recommended
+- Clear next-step options for the user
+
+If the review is clean, state:
+
+- what was checked
+- what was not checked
+- residual risks or follow-up tests worth running
 
 ## Design Principles
 
-1. **Independent re-inspection.** Each agent reads the actual code. No agent trusts prior text alone.
-2. **Bounded recall.** Scanner has a hard cap (15 findings, max 4 suspicious). Quality over quantity.
-3. **Evidence-based.** Every claim requires: specific location, concrete trigger, failure story.
-4. **Forced counterargument.** Scanner must state the strongest reason each finding might be wrong.
-5. **Permission to abstain.** Verifier can say INSUFFICIENT_EVIDENCE. Arbiter can say NEEDS_HUMAN_CHECK.
-6. **No fictional scoring.** No fake point systems. Acceptance criteria and evidence requirements drive quality.
-7. **Multi-lens scanning.** SOLID, security, code quality, and dead code — not just bug hunting.
+1. **Independent re-inspection.** Each agent reads real source files from `WORKTREE_DIR`.
+2. **Executable orchestration.** Examples and shell commands should be directly runnable.
+3. **Bounded recall.** Quick mode stays small; deep mode stays selective.
+4. **Evidence-based claims.** Every finding needs a location, trigger, and failure story.
+5. **Forced counterarguments.** Scanner must explain the strongest reason it could be wrong.
+6. **Permission to abstain.** Verifier and Arbiter can preserve ambiguity rather than invent certainty.
+7. **Robust cleanup.** Temporary worktrees are always cleaned up.
 8. **Review-first.** Never implement without explicit user confirmation.
 
 ## Red Flags
 
 **Never:**
-- Skip the Verifier stage. Without verification, false positive rate is 30-60%.
-- Let Verifier or Arbiter judge without codebase access. Text-only debate produces rhetoric, not truth.
-- Remove finding caps from Scanner. Unlimited findings collapse the pipeline into triage noise.
-- Force binary verdicts. NEEDS_HUMAN_CHECK exists for a reason.
-- Use the same model instance for all 3 agents if avoidable (consensus collapse risk).
-- Implement changes before user confirms. This is review-first.
-- Suppress type errors or silence diagnostics to "fix" findings.
 
-**If pipeline produces too few findings:**
-- Do NOT make Scanner more aggressive. Instead, add a second independent Scanner with different search focus and merge/dedupe before verification.
+- Skip verification and surface Scanner output directly to the user
+- Let agents cite diff offsets as source lines
+- Use vague pseudo-shell examples that are not executable
+- Leave large-diff batching unspecified
+- Keep temporary worktrees around after interruption or failure
+- Force the full three-stage pipeline for every tiny review
+- Implement fixes before the user asks
 
 ## Prompt Templates
 
-- `./prompts/scanner-prompt.md` — Agent 1: multi-lens scan with forced counterarguments
-- `./prompts/verifier-prompt.md` — Agent 2: independent verification with falsification
-- `./prompts/arbiter-prompt.md` — Agent 3: evidence-based final judgment
+- `./prompts/scanner-prompt.md`
+- `./prompts/verifier-prompt.md`
+- `./prompts/arbiter-prompt.md`
 
 ## References
 
@@ -370,5 +384,5 @@ Description of the issue and suggested fix.
 |------|---------|
 | `references/solid-checklist.md` | SOLID smell prompts and refactor heuristics |
 | `references/security-checklist.md` | Web/app security and runtime risk checklist |
-| `references/code-quality-checklist.md` | Error handling, performance, boundary conditions |
+| `references/code-quality-checklist.md` | Error handling, performance, and boundary conditions |
 | `references/removal-plan.md` | Template for deletion candidates and follow-up plan |

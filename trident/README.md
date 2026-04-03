@@ -1,6 +1,6 @@
 # Trident
 
-Three-pronged code review pipeline that combines multi-lens scanning with independent 3-agent verification to produce high-confidence findings with minimal false positives.
+Three-pronged code review pipeline that combines multi-lens scanning, independent verification, and evidence-based final judgment.
 
 ## Installation
 
@@ -18,22 +18,28 @@ cp -r trident/ ~/.agents/skills/trident/
 
 ## Features
 
-### Multi-Lens Scanning (from code-review-expert)
+### Two review depths
+- **Quick** — Scanner plus Verifier for small local diffs and fast triage
+- **Deep** — Scanner plus Verifier plus Arbiter for PRs, ranges, directories, and risky changes
+
+### Multi-Lens Scanning
 - **SOLID Principles** — SRP, OCP, LSP, ISP, DIP violations + code smells
 - **Security** — XSS, injection, SSRF, race conditions, auth gaps, secrets, crypto
 - **Code Quality** — Error handling, performance (N+1, caching), boundary conditions
 - **Data Integrity** — Transactions, idempotency, concurrent modifications
 - **Dead Code Detection** — Removal candidates with safe deletion plans
 
-### Independent Verification Pipeline (from repo-review)
+### Evidence-focused pipeline
 - **Forced Counterarguments** — Scanner must state strongest reason each finding might be wrong
 - **Independent Verification** — Verifier re-reads code, confirms/rejects each finding
-- **Evidence-Based Judgment** — Arbiter renders final verdicts with tiered verification
-- **Permission to Abstain** — INSUFFICIENT_EVIDENCE and NEEDS_HUMAN_CHECK for genuine ambiguity
-- **Bounded Recall** — Hard cap on findings to prevent noise (15 max)
+- **Evidence-Based Judgment** — Arbiter renders final verdicts in deep reviews
+- **Unified YAML Contract** — All three stages preserve the same finding schema
+- **Bounded Recall** — Quick mode caps findings at 6, deep mode at 15
 
 ### Review-First Workflow
 - Structured output with P0-P3 severity levels
+- Executable commands and concrete batching rules for large diffs
+- Worktree cleanup runs even on interruption or failure
 - Never implements changes without user confirmation
 - Next-steps menu for user decision
 
@@ -60,6 +66,8 @@ Trident automatically detects what to review based on your input:
 
 Examples:
 - `/trident` — review unstaged changes
+- `/trident quick` — fast local triage
+- `/trident deep staged` — full review of staged changes
 - `/trident staged` — review staged changes
 - `/trident https://github.com/org/repo/pull/42` — review PR #42
 - `/trident main..feature-auth` — review branch diff
@@ -67,9 +75,9 @@ Examples:
 
 ## Pipeline
 
-1. **Scanner** — Multi-lens scan with forced counterarguments (SOLID, security, quality, dead code)
+1. **Scanner** — Multi-lens scan with forced counterarguments
 2. **Verifier** — Independent verification with falsification attempts
-3. **Arbiter** — Evidence-based final judgment with tiered verification
+3. **Arbiter** — Final judgment for deep reviews and disputed high-risk findings
 
 ## Severity Levels
 
@@ -97,11 +105,6 @@ trident/
     ├── code-quality-checklist.md # Error, perf, boundaries
     └── removal-plan.md           # Deletion planning template
 ```
-
-## Merged From
-
-- **code-review-expert** — Multi-lens scanning, severity taxonomy, structured output, review-first workflow, reference checklists
-- **repo-review** — 3-agent pipeline, forced counterarguments, independent verification, bounded recall, bug_id traceability, permission to abstain
 
 ## License
 

@@ -1,7 +1,7 @@
 interface:
   display_name: "Trident"
-  short_description: "3-pronged code review: multi-lens scan, independent verification, evidence-based judgment"
-  default_prompt: "Review current git changes with Trident: multi-lens scanning (SOLID, security, quality, dead code) followed by independent verification and evidence-based final judgment."
+  short_description: "Code review with quick and deep modes: scan, verify, and judge on evidence"
+  default_prompt: "Review current git changes with Trident. Use quick mode for small local diffs and deep mode for PRs, ranges, directories, or risky code paths."
 
 # Agent-agnostic skill - works with any LLM provider.
 # No provider-specific configuration required.

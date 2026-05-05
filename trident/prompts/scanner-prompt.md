@@ -25,6 +25,10 @@ The real source files in `{WORKTREE_DIR}` tell you what actually exists.
 You MUST read actual files from `{WORKTREE_DIR}` before citing any location.
 Never cite line numbers from diff output.
 
+For PR reviews, anchor your claims to the reviewed head commit from
+`{CONTEXT}`. If the context lacks a reviewed commit, list that in
+`areas_not_covered` and avoid P0/P1 certainty for claims that could be stale.
+
 ## Review Strategy
 
 Use the available tool plan. If a tool is unavailable, rely on source evidence and record the gap in `areas_not_covered`; do not invent command results.
@@ -50,6 +54,26 @@ Use the available tool plan. If a tool is unavailable, rely on source evidence a
 - Report at most 15 findings total
 - Removal candidates are allowed in a separate section
 - Validate the essential path once, then avoid happy-path bias by prioritizing boundary, failure, permission, ordering, and concurrency paths
+
+## Contract Surface Review (Mandatory When Applicable)
+
+If `{CONTEXT}` contains a `CONTRACT_SURFACE_MAP`, or the change touches a
+frontend/backend call, SDK boundary, persistence-backed list, export job, queue,
+or generated schema, inspect the contract symmetrically:
+
+1. Caller sends: parameter names, enum values, sort keys, direction encoding,
+   dates/timezones, flags, pagination, auth, and payload shape.
+2. Transport/schema expects: request DTOs, generated types, route docs,
+   validators, serializers, and default values.
+3. Callee applies: filter/search/sort order, pagination timing, aggregation,
+   totals/KPIs, export options, retries, and error shape.
+4. Consumer displays: UI state, totals, empty/error states, downloads, and
+   follow-up calls.
+
+For server-driven collections, explicitly compare search, filters, sort field
+names, sort direction, pagination, totals, and response metadata. A field that
+is sent by one side but ignored or differently named by the other is a candidate
+finding only if it creates a concrete wrong outcome.
 
 ## Edge Case Enumeration (Mandatory, Both Modes)
 
@@ -101,6 +125,19 @@ Only report a finding if you can provide all of the following:
 
 If you cannot describe the trigger and the wrong outcome, do not report the finding.
 
+### P0/P1 Gate
+
+Before labeling a finding P0 or P1, prove all of:
+
+- It is present in the current reviewed source snapshot.
+- It is reachable from production/user-visible code, not only from an unused or
+  legacy component.
+- If it crosses a contract boundary, both sides of the boundary support the
+  claimed mismatch.
+
+If any item is unproven, lower the severity or mark the finding suspicious so
+the Verifier can settle it.
+
 ## Areas to Inspect
 
 Focus on:
@@ -112,6 +149,7 @@ Focus on:
 - race conditions and shared-state issues
 - nil/null handling and boundary conditions
 - query semantics and persistence correctness
+- server-side collection semantics: filter/search/sort/pagination/totals
 - security-sensitive input handling
 - architectural coupling only when it creates a concrete failure mode
 
@@ -165,6 +203,7 @@ summary:
   suspicious_count: 0
   removal_candidate_count: 0
   highest_priority_bugs: []
+  contract_surfaces_checked: []
   deep_review_recommended: false
   areas_not_covered: []
 ```
@@ -176,6 +215,7 @@ summary:
 - Findings are sorted by severity first, confidence second
 - If review depth is `quick`, keep the list aggressively short
 - If there are no findings, return an empty `findings` list instead of filler text
+- P0/P1 findings passed currentness, reachability, and contract-symmetry gates
 - Allowed values:
   - `category`: `security`, `solid`, `quality`, `logic`, `data-integrity`, `concurrency`, `resource-leak`, `dead-code`, `other`
   - `severity`: `P0`, `P1`, `P2`, `P3`

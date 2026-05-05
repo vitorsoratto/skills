@@ -34,8 +34,10 @@ cp -r trident/ ~/.agents/skills/trident/
 - **Tool Routing** — Chooses git, rg, gh, tests, browser tools, docs, and CI evidence based on the review target
 - **Specialist Modules** — Adds quick/deep lanes for edge functions, security, data integrity, contracts, UI runtime, and dead-code review
 - **Edge Functions** — Breaks changed functions with extraordinary but realistic inputs while still checking the essential path
+- **Contract Integration** — Checks both sides of API, SDK, export, pagination, search, sort, totals, and generated-type contracts
 - **Independent Verification** — Verifier re-reads code, confirms/rejects each finding
 - **Evidence-Based Judgment** — Arbiter renders final verdicts in deep reviews
+- **PR Freshness Guard** — Anchors PR reviews to a head commit and re-checks that the source is still current before reporting
 - **Unified YAML Contract** — Core stages and modules preserve the same finding schema
 - **Bounded Recall** — Quick mode caps findings at 6, deep mode at 15
 
@@ -102,6 +104,7 @@ trident/
 ├── prompts/
 │   ├── scanner-prompt.md         # Agent 1: multi-lens scan
 │   ├── edge-functions-prompt.md  # Specialist: adversarial function edge cases
+│   ├── contract-integration-prompt.md # Specialist: caller/callee and API contracts
 │   ├── verifier-prompt.md        # Agent 2: independent verification
 │   └── arbiter-prompt.md         # Agent 3: final judgment
 └── references/

@@ -23,6 +23,11 @@ Read real source files from `{WORKTREE_DIR}` when re-inspecting findings.
 Do not trust any previous agent or specialist module by default.
 Correct any line numbers that do not match the source files.
 
+For PR reviews, verify that final blocker claims still match the reviewed head
+commit recorded in `{CONTEXT}`. If the PR head changed during review, the final
+report must say the review is tied to the older commit or the affected claims
+must be re-inspected against the new head.
+
 ## Scanner Output
 
 {SCANNER_OUTPUT}
@@ -53,8 +58,21 @@ You must independently inspect:
 - every disputed finding
 - every finding with verifier confidence `low`
 - every finding where verifier status is `insufficient_evidence`
+- every finding added by a `verifier-sweep` or specialist contract module
 
 For lower-risk aligned findings, you may rely on prior evidence if it is specific and coherent.
+
+## Blocker Gate
+
+Do not render `real_bug` with final severity P0 or P1 unless the evidence proves:
+
+1. The bug exists in the current reviewed source snapshot.
+2. The trigger reaches production or user-visible behavior.
+3. Cross-boundary claims were checked against both producer and consumer when
+   those sources are available.
+
+If the issue is real but isolated to unused code, stale PR state, or an
+unverified peer contract, use a lower severity or `needs_human_check`.
 
 ## Output Rules
 
@@ -117,6 +135,7 @@ summary:
 - Every P0/P1 or disputed finding was re-inspected
 - Module findings were contested against both their own evidence and the Verifier's verdict
 - The final severity matches impact, not just the Scanner label
+- Final blockers passed currentness, reachability, and contract-symmetry gates
 - `needs_human_check` is used when ambiguity is real
 - Suggested fixes are brief and only for `real_bug`
 - The output is one valid YAML block and nothing else

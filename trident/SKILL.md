@@ -167,10 +167,16 @@ For `pr` and `range`, create an isolated worktree in both `quick` and `deep` mod
 
 ```bash
 WORKTREE_DIR="/tmp/trident-review-pr-${PR_NUMBER}-$(date +%s)"
-git worktree add "$WORKTREE_DIR" --detach
+PR_HEAD_SHA="$(gh pr view "${PR_NUMBER}" --json headRefOid --jq .headRefOid)"
+git fetch origin "pull/${PR_NUMBER}/head"
+git worktree add "$WORKTREE_DIR" --detach FETCH_HEAD
 TRIDENT_CREATED_WORKTREE=1
 cd "$WORKTREE_DIR"
-gh pr checkout "${PR_NUMBER}"
+REVIEWED_COMMIT="$(git rev-parse HEAD)"
+if [[ "$REVIEWED_COMMIT" != "$PR_HEAD_SHA" ]]; then
+  echo "Reviewed commit does not match PR head; refetch before reviewing" >&2
+  exit 1
+fi
 ```
 
 **Mode: `range`**
@@ -257,12 +263,34 @@ For all modes, enrich context with:
 5. High-risk paths such as auth, payments, persistence, migrations, or concurrency
 6. `ACTIVE_MODULES`, selected from the module table above
 7. `TOOL_PLAN`, including commands already run and useful tools that were unavailable
-8. **Edge-case hypotheses** (borrowed from `systematic-debugging` / `tracer`):
+8. `SOURCE_FRESHNESS`, including the reviewed commit SHA for `pr` and `range`
+   reviews and the latest PR head SHA when available
+9. `CONTRACT_SURFACE_MAP`, when the change crosses a runtime or API boundary:
+   enumerate producer, transport shape, consumer, and UI/runtime effect. For
+   server-driven collections, include filters, search, sort field names, sort
+   direction encoding, pagination, totals/KPIs, export flags, and response
+   metadata. This is mandatory for billing, reporting, persistence-backed
+   lists, and any frontend/backend contract.
+10. **Edge-case hypotheses** (borrowed from `systematic-debugging` / `tracer`):
    for each modified unit, pre-seed `{CONTEXT}` with candidate failure inputs
    across nullability, emptiness, numeric/collection/string boundaries, time,
    concurrency, failure paths, auth, and input-trust classes. These seeds feed
    the Scanner's mandatory Edge Case Enumeration pass and the `edge-functions`
    module; they apply in both `quick` and `deep` mode.
+
+#### Currentness and Reachability Gates
+
+Before accepting any P0/P1 finding, prove:
+
+1. The finding matches the reviewed source snapshot, not an older diff or
+   earlier PR comment.
+2. The trigger reaches production or user-visible code through imports, routes,
+   jobs, exports, config, or documented external use.
+3. Any cross-service or client/server contract claim is checked against both
+   sides when the peer source, schema, docs, or generated types are available.
+
+If one of these gates is not proven, downgrade the item to `needs_human_check`
+or `insufficient_evidence`; do not present it as a confirmed blocker.
 
 ### Phase 3: Handle Scope Size Explicitly
 
@@ -339,6 +367,7 @@ Run:
 3. Merge and dedupe provisional findings
 4. Verifier
 5. Arbiter
+6. Source freshness check before final reporting
 
 Use deep mode rules:
 
@@ -346,7 +375,27 @@ Use deep mode rules:
 - Up to **15 findings**
 - Dead-code and removal candidates enabled
 - Avoid happy-path bias: validate the essential path once, then prioritize unusual inputs, failed dependencies, boundary sizes, ordering, retries, and permission changes
+- For client/server or cross-package behavior, activate `contract-integration`
+  and trace the full contract map instead of checking only the changed caller.
 - Arbiter re-inspects every disputed high-severity item and any finding escalated by the Verifier
+- If two or more P0/P1 findings are rejected as stale, unreachable, or
+  contradicted by current source, run a focused missed-risk sweep over the same
+  high-risk surfaces before final reporting. The sweep must look for defects
+  not already represented in Scanner output, especially contract mismatches and
+  server-side collection semantics.
+
+### Phase 5.5: Source Freshness Check
+
+For `pr` mode, re-read the PR head before presenting the final report:
+
+```bash
+LATEST_PR_HEAD_SHA="$(gh pr view "${PR_NUMBER}" --json headRefOid --jq .headRefOid)"
+test "$LATEST_PR_HEAD_SHA" = "$REVIEWED_COMMIT"
+```
+
+If the PR changed during review, do not claim the review is current. Either
+rerun the affected stages against the new head or state that findings are tied
+to `REVIEWED_COMMIT` and may be stale.
 
 ### Phase 6: Present to User
 
@@ -403,6 +452,7 @@ Only append stage-specific data. Do not rename keys between stages. Specialist m
 Convert the final YAML-backed result into a short human-facing report:
 
 - Files reviewed and overall assessment
+- Reviewed commit or diff source, and whether it was still current at report time
 - Confirmed bugs
 - Dismissed findings
 - Needs human review
@@ -426,6 +476,8 @@ If the review is clean, state:
 6. **Permission to abstain.** Verifier and Arbiter can preserve ambiguity rather than invent certainty.
 7. **Robust cleanup.** Temporary worktrees are always cleaned up.
 8. **Review-first.** Never implement without explicit user confirmation.
+9. **Current-source discipline.** PR findings must be anchored to a specific head commit and rechecked for freshness before reporting.
+10. **Contract symmetry.** Caller/callee, frontend/backend, and export/import claims require evidence from both sides when available.
 
 ## Red Flags
 
@@ -440,11 +492,14 @@ If the review is clean, state:
 - Run specialist modules without sending their findings through Verifier
 - Spend deep mode mostly on happy-path validation
 - Implement fixes before the user asks
+- Confirm P0/P1 findings without proving current source, reachability, and contract symmetry
+- Stop after rejecting stale findings without checking whether the same surface hides a different current bug
 
 ## Prompt Templates
 
 - `./prompts/scanner-prompt.md`
 - `./prompts/edge-functions-prompt.md`
+- `./prompts/contract-integration-prompt.md`
 - `./prompts/verifier-prompt.md`
 - `./prompts/arbiter-prompt.md`
 

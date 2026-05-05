@@ -27,6 +27,26 @@ Specialist modules are first-lane reviewers. They generate scanner-compatible fi
 - Include test ideas only when tied to a concrete suspected failure.
 - Record coverage gaps as `areas_not_covered`, not as bugs.
 
+## Contract-Integration Deep Checklist
+
+When `contract-integration` is active, build a producer/consumer matrix before
+reporting findings:
+
+- caller parameter names, enum values, flags, date/timezone fields, and defaults
+- transport shape: route, query string, body, generated type, DTO, or SDK call
+- callee parsing and validation, including ignored fields and fallback defaults
+- operation order for server-driven lists, including whether aggregate totals
+  are global or page-local
+- response metadata, totals/KPIs, and export/download behavior consumed by UI
+- source freshness: checked commit and peer contract source used
+
+For server-side collections, never stop after checking only search or only
+pagination. Search, filters, sort field names, sort direction, page totals,
+grand totals, and exported views are one contract surface.
+
+Only promote a contract finding to P0/P1 when both sides are current and the
+wrong outcome is reachable by a normal user or job.
+
 ## Merge Rules
 
 When combining module output with Scanner output, dedupe by:

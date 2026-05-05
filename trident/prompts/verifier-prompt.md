@@ -24,6 +24,11 @@ Do not trust the Scanner's or specialist modules' wording, snippets, or line num
 
 If any producer cited an impossible line number, correct it using the real source file.
 
+For PR reviews, compare each high-severity claim with the reviewed commit from
+`{CONTEXT}`. If a claim appears to describe an older version of the PR, reject
+it as stale with the current-source counter-evidence instead of downgrading it
+silently.
+
 ## Scanner Output
 
 {SCANNER_OUTPUT}
@@ -52,6 +57,20 @@ For every `bug_id` from Scanner or a specialist module:
 4. Trace the trigger path step by step
 5. Try to falsify the claim before confirming it
 6. Use the relevant quick/deep tools from `{TOOL_PLAN}` when they can cheaply prove behavior
+7. For P0/P1 findings, prove currentness, production reachability, and
+   contract symmetry when a boundary is involved
+
+When a claim involves a frontend/backend, SDK, queue, export, or persistence
+contract, read both sides if they are available locally or through repo docs.
+Do not confirm a contract bug from only the caller unless the callee source or
+schema is unavailable and that gap is recorded.
+
+If two or more high-severity findings are rejected as stale, unreachable, or
+contradicted by current source, run a focused missed-risk sweep on the same
+surface before answering. This sweep does not need to be broad; it should check
+whether the area still has a different current bug, especially around
+filter/search/sort/pagination/totals/export semantics. Add any concrete new
+bug as a normal finding with `origin_module: verifier-sweep`.
 
 Use these statuses:
 
@@ -64,6 +83,9 @@ Use these statuses:
 - Output exactly one fenced `yaml` block
 - Preserve stable finding fields from the Scanner or specialist module
 - Add only the `verifier` section per finding
+- If the missed-risk sweep finds a new concrete bug, append it as a normal
+  finding with `origin_module: verifier-sweep`, populate both `scanner` and
+  `verifier`, and keep the same stable field schema
 - Preserve `origin_module`
 - Do not rename `bug_id`, `origin_module`, `title`, `location`, `category`, or `severity`
 - Keep `removal_candidates` if present and add verifier notes only when you checked them
@@ -129,8 +151,10 @@ summary:
 - Every verdict is backed by code you actually re-read
 - `rejected` is used only with concrete counter-evidence
 - `insufficient_evidence` is used when ambiguity is real
+- P0/P1 confirmations passed currentness, reachability, and contract-symmetry checks
 - All stable fields from the Scanner or specialist module are preserved
 - Module findings are contested with the same rigor as Scanner findings
+- Any `verifier-sweep` finding has source evidence, trigger, impact, and a counterargument
 - If review depth is `quick`, flag `deep_review_recommended: true` when the findings are risky or disputed
 - Allowed values:
   - `verifier.status`: `confirmed`, `rejected`, `insufficient_evidence`

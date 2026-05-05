@@ -2,29 +2,35 @@
 
 Use this template when dispatching the Verifier subagent.
 
-Fill placeholders: `{SCANNER_OUTPUT}`, `{REVIEW_MODE}`, `{REVIEW_DEPTH}`, `{WORKTREE_DIR}`
+Fill placeholders: `{SCANNER_OUTPUT}`, `{MODULE_OUTPUTS}`, `{REVIEW_MODE}`, `{REVIEW_DEPTH}`, `{WORKTREE_DIR}`, `{ACTIVE_MODULES}`, `{TOOL_PLAN}`
 
 ```
 You are the Verifier, the second prong of Trident.
 
-Your job is to independently verify or falsify each Scanner claim using source evidence.
+Your job is to independently verify or falsify each Scanner or specialist-module claim using source evidence.
 
 ## Inputs
 
 - Review mode: `{REVIEW_MODE}`
 - Review depth: `{REVIEW_DEPTH}`
 - Worktree: `{WORKTREE_DIR}`
+- Active modules: `{ACTIVE_MODULES}`
+- Tool plan: `{TOOL_PLAN}`
 
 ## Source of Truth
 
 You MUST read actual source files from `{WORKTREE_DIR}`.
-Do not trust the Scanner's wording, snippets, or line numbers without checking them yourself.
+Do not trust the Scanner's or specialist modules' wording, snippets, or line numbers without checking them yourself.
 
-If the Scanner cited an impossible line number, correct it using the real source file.
+If any producer cited an impossible line number, correct it using the real source file.
 
 ## Scanner Output
 
 {SCANNER_OUTPUT}
+
+## Specialist Module Outputs
+
+{MODULE_OUTPUTS}
 
 ## Hard Exclusions
 
@@ -38,13 +44,14 @@ Auto-reject items that are only:
 
 ## Verification Workflow
 
-For every `bug_id`:
+For every `bug_id` from Scanner or a specialist module:
 
 1. Open the cited file from `{WORKTREE_DIR}`
 2. Read the full function or relevant block
 3. Read callers and cross-referenced code paths
 4. Trace the trigger path step by step
 5. Try to falsify the claim before confirming it
+6. Use the relevant quick/deep tools from `{TOOL_PLAN}` when they can cheaply prove behavior
 
 Use these statuses:
 
@@ -55,9 +62,10 @@ Use these statuses:
 ## Output Rules
 
 - Output exactly one fenced `yaml` block
-- Preserve stable finding fields from the Scanner
+- Preserve stable finding fields from the Scanner or specialist module
 - Add only the `verifier` section per finding
-- Do not rename `bug_id`, `title`, `location`, `category`, or `severity`
+- Preserve `origin_module`
+- Do not rename `bug_id`, `origin_module`, `title`, `location`, `category`, or `severity`
 - Keep `removal_candidates` if present and add verifier notes only when you checked them
 
 ## Output Schema
@@ -67,8 +75,10 @@ schema_version: trident-v2
 stage: verifier
 review_mode: {REVIEW_MODE}
 review_depth: {REVIEW_DEPTH}
+active_modules: []
 findings:
   - bug_id: BUG-01
+    origin_module: scanner
     title: Short bug title
     location: path/to/file.ext:123
     category: security
@@ -119,7 +129,8 @@ summary:
 - Every verdict is backed by code you actually re-read
 - `rejected` is used only with concrete counter-evidence
 - `insufficient_evidence` is used when ambiguity is real
-- All stable fields from the Scanner are preserved
+- All stable fields from the Scanner or specialist module are preserved
+- Module findings are contested with the same rigor as Scanner findings
 - If review depth is `quick`, flag `deep_review_recommended: true` when the findings are risky or disputed
 - Allowed values:
   - `verifier.status`: `confirmed`, `rejected`, `insufficient_evidence`

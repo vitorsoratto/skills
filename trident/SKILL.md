@@ -1,6 +1,6 @@
 ---
 name: trident
-description: Three-pronged code review pipeline that combines broad scanning, independent verification, and evidence-based judgment.
+description: Tool-aware, modular code review pipeline with quick/deep modes, adversarial edge-case review, independent verification, and evidence-based judgment.
 ---
 
 # Trident
@@ -9,7 +9,7 @@ Three-pronged code review pipeline: **Scan -> Verify -> Judge**.
 
 Combines multi-lens scanning with independent verification to produce high-confidence findings while keeping false positives low.
 
-**Core principle:** Scan broadly, verify independently, judge on evidence from real source files.
+**Core principle:** Scan broadly, route to the right tools and specialist modules, verify independently, judge on evidence from real source files.
 
 ## When to Use
 
@@ -23,10 +23,11 @@ Combines multi-lens scanning with independent verification to produce high-confi
 
 ## Review Axes
 
-Trident has two separate axes:
+Trident has three separate axes:
 
 1. **Review mode**: what to review
 2. **Review depth**: how aggressively to review it
+3. **Active modules**: which specialist lenses to run
 
 ### Review Modes
 
@@ -45,8 +46,8 @@ Trident supports **6 review modes**:
 
 | Depth | Trigger | Pipeline | Use When |
 |-------|---------|----------|----------|
-| `quick` | User says "quick" or auto-selected for small local diffs | Scanner -> Verifier | Fast triage, small diffs, day-to-day reviews |
-| `deep` | User says "deep"/"full" or auto-selected for broad/risky scopes | Scanner -> Verifier -> Arbiter | PRs, ranges, directories, risky code, or disputed findings |
+| `quick` | User says "quick" or auto-selected for small local diffs | Scanner + active quick modules -> Verifier | Fast triage, small diffs, day-to-day reviews |
+| `deep` | User says "deep"/"full" or auto-selected for broad/risky scopes | Scanner + active deep modules -> Verifier -> Arbiter | PRs, ranges, directories, risky code, or disputed findings |
 
 **Auto-depth selection:**
 
@@ -58,6 +59,45 @@ Trident supports **6 review modes**:
 5. If auth, billing, persistence, migrations, or concurrency paths are involved -> deep
 6. Otherwise -> quick
 ```
+
+### Core Chain and Specialist Modules
+
+Trident has a fixed core chain plus optional specialist modules. Do **not** treat the core itself as a module:
+
+1. `Scanner` creates provisional findings.
+2. `Verifier` contests every Scanner and module finding.
+3. `Arbiter` runs in `deep` mode and contests both prior stages.
+
+Specialist modules feed provisional findings, test ideas, or coverage gaps into the core. They never bypass the Verifier.
+
+Every module must declare both `quick` and `deep` behavior:
+
+| Module | Activate When | Quick Use | Deep Use |
+|--------|---------------|-----------|----------|
+| `edge-functions` | Functions, handlers, validators, bug fixes, new feature logic | Validate the essential path plus the top 3 non-happy inputs/states; max 4 module findings | Avoid happy-path bias; build an adversarial matrix across boundary, ordering, failure, auth, and concurrency states; include one essential smoke path |
+| `security-trust` | Auth, tenant/ownership, input, files, URLs, secrets, permissions | Inspect changed trust boundary and immediate callers | Trace attacker-controlled data, authz matrix, config/dependency risk, and cross-boundary failure modes |
+| `data-integrity` | Persistence, migrations, queues, billing, counters, state machines | Check transactions, idempotency, and direct write ordering | Trace retries, partial writes, races, rollback paths, backfills, and migration compatibility |
+| `contract-integration` | API schemas, SDKs, webhooks, clients, jobs, external services | Check caller/callee contract, error shape, and version assumptions | Read local docs plus official external docs when relevant; verify timeout, retry, pagination, and compatibility behavior |
+| `ui-runtime` | UI state, forms, routing, browser behavior, frontend data flow | Check critical render/interaction path and obvious empty/error states | Exercise invalid, empty, loading, permission, responsive, accessibility, and browser-runtime states with browser tools when available |
+| `removal-dead-code` | Deletions, deprecated paths, unused branches, simplification requests | Only report obvious removal candidates from touched scope | Search call sites, tests, route/config registration, history, and produce a safe deletion plan |
+
+Load `references/module-playbook.md` when module selection is unclear or the review needs a deeper checklist.
+
+### Tool Selection Rules
+
+Use the lightest tool that can prove or disprove the claim. Build a short `TOOL_PLAN` before dispatching agents.
+
+| Evidence Need | Quick Tooling | Deep Tooling |
+|---------------|---------------|--------------|
+| Scope and intent | `git status`, `git diff --stat`, focused `git diff`, PR metadata | commit history, branch comparison, PR discussion/checks when available |
+| Locate source and callers | `rg --files`, `rg`, direct file reads | broader call graph search, route/config registration, generated types, package boundaries |
+| Behavior verification | smallest relevant unit/test/typecheck command from repo scripts | focused tests plus lint/typecheck/build for touched package; add reproduction or table tests when cheap |
+| External API/SDK/framework behavior | local docs and source contracts | official docs first, then current repo usage; do not guess unstable API behavior |
+| UI/runtime behavior | source inspection and existing tests | browser/screenshot/interaction tools for visible regressions when available |
+| CI/PR state | `gh pr view`, `gh pr diff` | `gh pr checks`, failing logs, unresolved review threads when relevant |
+| Data/migrations | schema/migration files and local dry-run tools | migration rollback/compatibility checks, fixture or local DB verification when safe |
+
+If a useful tool is unavailable, record the gap in `{CONTEXT}` and compensate with source evidence. Never fabricate tool output.
 
 ## How to Execute
 
@@ -215,6 +255,14 @@ For all modes, enrich context with:
 3. PR metadata for `pr`
 4. Commit messages and intent for `range`
 5. High-risk paths such as auth, payments, persistence, migrations, or concurrency
+6. `ACTIVE_MODULES`, selected from the module table above
+7. `TOOL_PLAN`, including commands already run and useful tools that were unavailable
+8. **Edge-case hypotheses** (borrowed from `systematic-debugging` / `tracer`):
+   for each modified unit, pre-seed `{CONTEXT}` with candidate failure inputs
+   across nullability, emptiness, numeric/collection/string boundaries, time,
+   concurrency, failure paths, auth, and input-trust classes. These seeds feed
+   the Scanner's mandatory Edge Case Enumeration pass and the `edge-functions`
+   module; they apply in both `quick` and `deep` mode.
 
 ### Phase 3: Handle Scope Size Explicitly
 
@@ -232,13 +280,14 @@ When batching is required:
 1. Group files by top-level module or feature area.
 2. Create batches capped at **12 files or 400 changed lines**, whichever comes first.
 3. Run **Scanner per batch** with `BATCH_ID` in `{CONTEXT}`.
-4. Merge Scanner outputs into one provisional finding set.
-5. Dedupe provisional findings using this key:
+4. Run active specialist modules per batch only when the module has enough local context to be useful.
+5. Merge Scanner and module outputs into one provisional finding set.
+6. Dedupe provisional findings using this key:
    - normalized category
    - normalized file path
    - normalized trigger or claim
-6. Run one Verifier pass on the deduped set.
-7. In `deep` mode, run Arbiter only on:
+7. Run one Verifier pass on the deduped set.
+8. In `deep` mode, run Arbiter only on:
    - all P0 and P1 findings
    - all disputed findings
    - any finding with verifier confidence `low`
@@ -254,6 +303,9 @@ Construct these placeholders for every stage:
 - `{REVIEW_MODE}`: one of the 6 supported modes
 - `{REVIEW_DEPTH}`: `quick` or `deep`
 - `{WORKTREE_DIR}`: absolute path to the source root agents must inspect
+- `{ACTIVE_MODULES}`: selected specialist modules and their quick/deep contracts
+- `{TOOL_PLAN}`: tools/commands to use, tools already run, and unavailable-tool gaps
+- `{MODULE_OUTPUTS}`: provisional YAML outputs from specialist modules, when present
 
 ### Phase 5: Dispatch Pipeline
 
@@ -262,13 +314,20 @@ Construct these placeholders for every stage:
 Run:
 
 1. Scanner
-2. Verifier
+2. Active specialist modules that are cheap enough for `quick`
+3. Merge and dedupe provisional findings
+4. Verifier
 
 Use quick mode rules:
 
 - Focus on changed files and immediate cross-file effects
 - Cap findings at **6**
 - Skip dead-code hunting unless it is obvious from the touched scope
+- Scanner must still run the **Edge Case Enumeration** pass (see scanner prompt)
+  against every modified unit, using the Boundary Conditions section of
+  `references/code-quality-checklist.md` plus the hypothesis seeds from Phase 2
+- If `edge-functions` is active, run `prompts/edge-functions-prompt.md` or fold its quick checklist into Scanner when separate dispatch is not practical
+- Validate that the essential happy path still works, then spend the remaining effort on non-happy paths
 - If Verifier returns any `insufficient_evidence`, any P0/P1, or more than 2 rejected scanner findings, recommend rerunning in `deep` mode
 
 #### Deep Mode
@@ -276,14 +335,17 @@ Use quick mode rules:
 Run:
 
 1. Scanner
-2. Verifier
-3. Arbiter
+2. Active specialist modules, with `edge-functions` active by default for feature and bug-fix logic
+3. Merge and dedupe provisional findings
+4. Verifier
+5. Arbiter
 
 Use deep mode rules:
 
 - Full multi-lens scan
 - Up to **15 findings**
 - Dead-code and removal candidates enabled
+- Avoid happy-path bias: validate the essential path once, then prioritize unusual inputs, failed dependencies, boundary sizes, ordering, retries, and permission changes
 - Arbiter re-inspects every disputed high-severity item and any finding escalated by the Verifier
 
 ### Phase 6: Present to User
@@ -305,15 +367,19 @@ schema_version: trident-v2
 stage: scanner
 review_mode: unstaged
 review_depth: quick
+active_modules: []
 findings: []
 removal_candidates: []
 summary: {}
 ```
 
+`stage` is one of `scanner`, `edge-functions`, `verifier`, or `arbiter`. Future specialist modules may add stage names, but their findings must remain scanner-compatible.
+
 Each item in `findings` must preserve these stable fields:
 
 ```yaml
 - bug_id: BUG-01
+  origin_module: scanner
   title: Short bug title
   location: path/to/file.ext:123
   category: security
@@ -325,11 +391,12 @@ Each item in `findings` must preserve these stable fields:
 
 Stage-specific fields:
 
+- `origin_module`: `scanner` or the specialist module that produced the provisional claim
 - `scanner.status`: `confirmed` or `suspicious`
 - `verifier.status`: `confirmed`, `rejected`, or `insufficient_evidence`
 - `arbiter.verdict`: `real_bug`, `not_a_bug`, or `needs_human_check`
 
-Only append stage-specific data. Do not rename keys between stages.
+Only append stage-specific data. Do not rename keys between stages. Specialist modules must emit scanner-compatible findings with `origin_module` populated; Verifier treats them as provisional first-lane claims.
 
 ## Final User Output
 
@@ -370,11 +437,14 @@ If the review is clean, state:
 - Leave large-diff batching unspecified
 - Keep temporary worktrees around after interruption or failure
 - Force the full three-stage pipeline for every tiny review
+- Run specialist modules without sending their findings through Verifier
+- Spend deep mode mostly on happy-path validation
 - Implement fixes before the user asks
 
 ## Prompt Templates
 
 - `./prompts/scanner-prompt.md`
+- `./prompts/edge-functions-prompt.md`
 - `./prompts/verifier-prompt.md`
 - `./prompts/arbiter-prompt.md`
 
@@ -386,3 +456,6 @@ If the review is clean, state:
 | `references/security-checklist.md` | Web/app security and runtime risk checklist |
 | `references/code-quality-checklist.md` | Error handling, performance, and boundary conditions |
 | `references/removal-plan.md` | Template for deletion candidates and follow-up plan |
+| `references/tool-playbook.md` | Tool selection guidance for quick and deep reviews |
+| `references/module-playbook.md` | Specialist module activation and quick/deep checklists |
+| `references/edge-functions-checklist.md` | Adversarial function-breaking matrix for robust features and bug fixes |

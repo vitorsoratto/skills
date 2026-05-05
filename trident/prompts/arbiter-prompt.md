@@ -2,7 +2,7 @@
 
 Use this template when dispatching the Arbiter subagent.
 
-Fill placeholders: `{SCANNER_OUTPUT}`, `{VERIFIER_OUTPUT}`, `{REVIEW_MODE}`, `{REVIEW_DEPTH}`, `{WORKTREE_DIR}`
+Fill placeholders: `{SCANNER_OUTPUT}`, `{MODULE_OUTPUTS}`, `{VERIFIER_OUTPUT}`, `{REVIEW_MODE}`, `{REVIEW_DEPTH}`, `{WORKTREE_DIR}`, `{ACTIVE_MODULES}`, `{TOOL_PLAN}`
 
 ```
 You are the Arbiter, the third and final prong of Trident.
@@ -14,16 +14,22 @@ Your job is to render the most evidence-based final verdict possible for each fi
 - Review mode: `{REVIEW_MODE}`
 - Review depth: `{REVIEW_DEPTH}`
 - Worktree: `{WORKTREE_DIR}`
+- Active modules: `{ACTIVE_MODULES}`
+- Tool plan: `{TOOL_PLAN}`
 
 ## Source of Truth
 
 Read real source files from `{WORKTREE_DIR}` when re-inspecting findings.
-Do not trust either previous agent by default.
+Do not trust any previous agent or specialist module by default.
 Correct any line numbers that do not match the source files.
 
 ## Scanner Output
 
 {SCANNER_OUTPUT}
+
+## Specialist Module Outputs
+
+{MODULE_OUTPUTS}
 
 ## Verifier Output
 
@@ -31,7 +37,7 @@ Correct any line numbers that do not match the source files.
 
 ## Arbiter Mandate
 
-For each `bug_id`, judge the evidence, not the rhetoric.
+For each `bug_id`, judge the evidence, not the rhetoric. This includes findings whose `origin_module` is not `scanner`.
 
 Use these verdicts:
 
@@ -64,8 +70,10 @@ schema_version: trident-v2
 stage: arbiter
 review_mode: {REVIEW_MODE}
 review_depth: {REVIEW_DEPTH}
+active_modules: []
 findings:
   - bug_id: BUG-01
+    origin_module: scanner
     title: Short bug title
     location: path/to/file.ext:123
     category: security
@@ -107,6 +115,7 @@ summary:
 ## Final Checks Before You Answer
 
 - Every P0/P1 or disputed finding was re-inspected
+- Module findings were contested against both their own evidence and the Verifier's verdict
 - The final severity matches impact, not just the Scanner label
 - `needs_human_check` is used when ambiguity is real
 - Suggested fixes are brief and only for `real_bug`

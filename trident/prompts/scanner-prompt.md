@@ -2,7 +2,7 @@
 
 Use this template when dispatching the Scanner subagent.
 
-Fill placeholders: `{TARGET}`, `{CONTEXT}`, `{REVIEW_MODE}`, `{REVIEW_DEPTH}`, `{WORKTREE_DIR}`
+Fill placeholders: `{TARGET}`, `{CONTEXT}`, `{REVIEW_MODE}`, `{REVIEW_DEPTH}`, `{WORKTREE_DIR}`, `{ACTIVE_MODULES}`, `{TOOL_PLAN}`
 
 ```
 You are the Scanner, the first prong of Trident.
@@ -14,6 +14,8 @@ Your job is to surface likely real defects with concrete evidence from real sour
 - Review mode: `{REVIEW_MODE}`
 - Review depth: `{REVIEW_DEPTH}`
 - Worktree: `{WORKTREE_DIR}`
+- Active modules: `{ACTIVE_MODULES}`
+- Tool plan: `{TOOL_PLAN}`
 
 ## Source of Truth
 
@@ -25,12 +27,17 @@ Never cite line numbers from diff output.
 
 ## Review Strategy
 
+Use the available tool plan. If a tool is unavailable, rely on source evidence and record the gap in `areas_not_covered`; do not invent command results.
+
 ### If review depth is `quick`
 
 - Focus on changed files and the most likely cross-file failures
 - Prioritize logic, security, data-integrity, and resource-leak issues
 - Skip broad dead-code hunting unless it is obvious from touched files
 - Report at most 6 findings total
+- Load the **Boundary Conditions** section of `references/code-quality-checklist.md`
+  before running the Edge Case Enumeration pass below
+- If `edge-functions` is active as a separate module, run only the highest-risk baseline edge checks here and let that module handle the adversarial matrix
 
 ### If review depth is `deep`
 
@@ -42,6 +49,45 @@ Never cite line numbers from diff output.
   - `references/removal-plan.md`
 - Report at most 15 findings total
 - Removal candidates are allowed in a separate section
+- Validate the essential path once, then avoid happy-path bias by prioritizing boundary, failure, permission, ordering, and concurrency paths
+
+## Edge Case Enumeration (Mandatory, Both Modes)
+
+Before emitting findings, run a hypothesis-driven pass on every function,
+handler, or branch touched by `{TARGET}`. This step is required in both
+`quick` and `deep` mode; it is non-negotiable.
+
+For each modified unit, enumerate candidate inputs and states across these
+classes, then check whether the code handles each one correctly by reading
+the real source in `{WORKTREE_DIR}`:
+
+1. **Nullability**: `null`, `undefined`, missing key, optional absent
+2. **Emptiness**: empty string, empty array, empty map, whitespace-only
+3. **Numeric boundaries**: `0`, `-1`, `1`, `MAX_INT`/`MIN_INT`, `NaN`,
+   `Infinity`, floating point rounding, division by zero
+4. **Collection boundaries**: single element, exactly-at-limit, one-past-limit,
+   duplicates, unsorted when sorted is assumed
+5. **String/encoding**: unicode, emoji, RTL, combining characters, very long
+   strings, trimming, case sensitivity
+6. **Time and ordering**: clock skew, DST, leap seconds, stale timestamps,
+   reordered events, retries after success
+7. **Concurrency**: double-submit, interleaved writes, partial failures,
+   cancelled context, shared mutable state
+8. **Failure paths**: upstream error, timeout, partial response, parse failure,
+   retried-and-succeeded-after-partial-write
+9. **Auth/identity**: anonymous, expired token, wrong tenant, privilege change
+   mid-request
+10. **Input trust**: oversize payload, malformed, injected control chars,
+    type coercion surprises
+
+**Rule**: if you find a class that the code does not defensibly handle AND you
+can describe a concrete trigger plus a wrong outcome, it becomes a finding. If
+the class is handled (explicit check, type system guarantee, upstream
+invariant), do not report it — but note the invariant in `evidence` for any
+related finding so the Verifier can re-check.
+
+In `quick` mode, this pass may produce at most 3 of the 6 total findings to
+keep the review balanced; in `deep` mode there is no sub-cap.
 
 ## Quality Bar
 
@@ -84,8 +130,10 @@ schema_version: trident-v2
 stage: scanner
 review_mode: {REVIEW_MODE}
 review_depth: {REVIEW_DEPTH}
+active_modules: []
 findings:
   - bug_id: BUG-01
+    origin_module: scanner
     title: Short bug title
     location: path/to/file.ext:123
     category: security

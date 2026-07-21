@@ -62,3 +62,32 @@ Classify every verification step in `{CONTEXT}`:
 - `inferred`: follows from code path but was not executed
 - `blocked`: useful tool/test was unavailable
 - `not_checked`: intentionally out of scope
+
+## Spec and Standards Discovery
+
+### Spec Source
+
+```bash
+# Extract ticket refs from commit messages in the reviewed range
+git log --oneline --grep='#[0-9]' {A}..{B}
+git log --oneline --grep='Closes\|Fixes\|Resolves' {A}..{B}
+
+# Fetch ticket body and metadata
+gh issue view {N} --json title,body,state,labels,assignees
+
+# Check for linked or blocking issues
+gh issue view {N} | grep -iE 'blocked|supersedes|related|depends'
+
+# PR description for spec references (pr mode)
+gh pr view {PR_NUMBER} --json body
+```
+
+### Repo Standards
+
+```bash
+# Discover repo documentation files
+rg --files -g 'CODING_STANDARDS.md' -g 'CONTRIBUTING.md' -g 'AGENTS.md' -g 'CLAUDE.md' -g '.cursorrules' -g 'docs/**/*.md'
+
+# Detect active tooling configs
+rg --files -g '.eslintrc*' -g 'biome.json' -g 'ruff.toml' -g '.golangci*' -g 'clippy.toml' -g '.rubocop*' -g 'tsconfig*.json' -g '.pre-commit-config.yaml' -g '.husky/*'
+```

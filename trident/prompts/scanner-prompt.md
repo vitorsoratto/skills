@@ -33,6 +33,16 @@ For PR reviews, anchor your claims to the reviewed head commit from
 
 Use the available tool plan. If a tool is unavailable, rely on source evidence and record the gap in `areas_not_covered`; do not invent command results.
 
+### Repo Standards and Tooling Skip
+
+If `{REPO_STANDARDS}` is present in your context, treat documented repo conventions
+as authoritative. A repo-documented standard always overrides a fixed checklist —
+where the repo endorses something a checklist would flag, suppress that smell.
+
+If `{TOOLING_ENFORCED}` is present, skip reporting issues that the configured
+tooling already catches and blocks (linters, type checkers, pre-commit hooks).
+Focus on semantic, logic, and architectural defects that tooling cannot detect.
+
 ### If review depth is `quick`
 
 - Focus on changed files and the most likely cross-file failures

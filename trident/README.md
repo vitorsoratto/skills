@@ -28,11 +28,12 @@ cp -r trident/ ~/.agents/skills/trident/
 - **Code Quality** — Error handling, performance (N+1, caching), boundary conditions
 - **Data Integrity** — Transactions, idempotency, concurrent modifications
 - **Dead Code Detection** — Removal candidates with safe deletion plans
+- **Spec Alignment** — Discovers linked tickets, PRDs, and issues; validates that the diff implements what was asked, not just that the code is well-written
 
 ### Evidence-focused pipeline
 - **Forced Counterarguments** — Scanner must state strongest reason each finding might be wrong
 - **Tool Routing** — Chooses git, rg, gh, tests, browser tools, docs, and CI evidence based on the review target
-- **Specialist Modules** — Adds quick/deep lanes for edge functions, security, data integrity, contracts, UI runtime, and dead-code review
+- **Specialist Modules** — Adds quick/deep lanes for edge functions, security, data integrity, contracts, UI runtime, dead-code review, and spec alignment
 - **Edge Functions** — Breaks changed functions with extraordinary but realistic inputs while still checking the essential path
 - **Contract Integration** — Checks both sides of API, SDK, export, pagination, search, sort, totals, and generated-type contracts
 - **Independent Verification** — Verifier re-reads code, confirms/rejects each finding
@@ -40,6 +41,9 @@ cp -r trident/ ~/.agents/skills/trident/
 - **PR Freshness Guard** — Anchors PR reviews to a head commit and re-checks that the source is still current before reporting
 - **Unified YAML Contract** — Core stages and modules preserve the same finding schema
 - **Bounded Recall** — Quick mode caps findings at 6, deep mode at 15
+- **Repo Standards Awareness** — Reads documented conventions (CODING_STANDARDS.md, CONTRIBUTING.md, AGENTS.md) and overrides fixed checklists
+- **Tooling Skip** — Skips issues that linters and type-checkers already enforce, focusing on semantic and architectural defects
+- **Output Budget** — Per-finding word limits keep reports concise and evidence-dense
 
 ### Review-First Workflow
 - Structured output with P0-P3 severity levels
@@ -105,6 +109,7 @@ trident/
 │   ├── scanner-prompt.md         # Agent 1: multi-lens scan
 │   ├── edge-functions-prompt.md  # Specialist: adversarial function edge cases
 │   ├── contract-integration-prompt.md # Specialist: caller/callee and API contracts
+│   ├── spec-alignment-prompt.md  # Specialist: ticket/PRD spec coverage
 │   ├── verifier-prompt.md        # Agent 2: independent verification
 │   └── arbiter-prompt.md         # Agent 3: final judgment
 └── references/

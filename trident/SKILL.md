@@ -80,6 +80,7 @@ Every module must declare both `quick` and `deep` behavior:
 | `contract-integration` | API schemas, SDKs, webhooks, clients, jobs, external services | Check caller/callee contract, error shape, and version assumptions | Read local docs plus official external docs when relevant; verify timeout, retry, pagination, and compatibility behavior |
 | `ui-runtime` | UI state, forms, routing, browser behavior, frontend data flow | Check critical render/interaction path and obvious empty/error states | Exercise invalid, empty, loading, permission, responsive, accessibility, and browser-runtime states with browser tools when available |
 | `removal-dead-code` | Deletions, deprecated paths, unused branches, simplification requests | Only report obvious removal candidates from touched scope | Search call sites, tests, route/config registration, history, and produce a safe deletion plan |
+| `spec-alignment` | Linked ticket, issue ref, PRD, or spec file discoverable | Check if top-level requirements from the ticket are addressed; report missing core items only | Extract all requirements, check coverage per item, flag scope creep, validate ticket status and acceptance criteria |
 
 Load `references/module-playbook.md` when module selection is unclear or the review needs a deeper checklist.
 
@@ -277,6 +278,27 @@ For all modes, enrich context with:
    concurrency, failure paths, auth, and input-trust classes. These seeds feed
    the Scanner's mandatory Edge Case Enumeration pass and the `edge-functions`
    module; they apply in both `quick` and `deep` mode.
+11. `REPO_STANDARDS`, discovered from repo documentation files: `CODING_STANDARDS.md`,
+    `CONTRIBUTING.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, or style guides under
+    `docs/`. Repo-documented standards override the fixed checklists — where a repo
+    endorses something a checklist would flag, suppress the smell.
+12. `TOOLING_ENFORCED`, detected from linter and type-checker configs: `.eslintrc*`,
+    `biome.json`, `ruff.toml`, `.golangci.yml`, `clippy.toml`, `.rubocop.yml`,
+    `tsconfig.json` strict flags, `.pre-commit-config.yaml`, `.husky/`, and CI
+    workflow files. The Scanner must skip reporting issues that configured tooling
+    already catches and blocks — focus on semantic, logic, and architectural
+    defects that tooling cannot detect.
+13. `SPEC_SOURCE`, discovered in priority order: (1) issue/ticket refs in commit
+    messages (`#123`, `Closes #45`, `Fixes #67`, `Resolves #89`) fetched via
+    `gh issue view {N}`; (2) PR description body for linked issues or spec
+    references; (3) branch-name ticket patterns (`feature/PROJ-123-*`,
+    `fix/456-*`); (4) spec files under `docs/specs/`, `specs/`, `.scratch/`, or
+    `PRD.md` matching the branch or feature name; (5) a path the user passed as
+    argument; (6) if nothing is found, ask the user. When a ticket is found,
+    validate it: fetch the full body, check status (open / closed / blocked),
+    extract acceptance criteria, and check for linked or superseding tickets. If
+    the ticket is closed or superseded, note this in `{CONTEXT}` and downgrade
+    spec-alignment confidence.
 
 #### Currentness and Reachability Gates
 
@@ -334,6 +356,9 @@ Construct these placeholders for every stage:
 - `{ACTIVE_MODULES}`: selected specialist modules and their quick/deep contracts
 - `{TOOL_PLAN}`: tools/commands to use, tools already run, and unavailable-tool gaps
 - `{MODULE_OUTPUTS}`: provisional YAML outputs from specialist modules, when present
+- `{REPO_STANDARDS}`: repo-documented standards files and their key rules
+- `{TOOLING_ENFORCED}`: linters/type-checkers already active and what they catch
+- `{SPEC_SOURCE}`: discovered ticket/PRD/spec and extracted requirements, or `none`
 
 ### Phase 5: Dispatch Pipeline
 
@@ -356,6 +381,8 @@ Use quick mode rules:
   `references/code-quality-checklist.md` plus the hypothesis seeds from Phase 2
 - If `edge-functions` is active, run `prompts/edge-functions-prompt.md` or fold its quick checklist into Scanner when separate dispatch is not practical
 - Validate that the essential happy path still works, then spend the remaining effort on non-happy paths
+- If `spec-alignment` is active, run `prompts/spec-alignment-prompt.md` to check
+  that core ticket requirements are addressed; report missing items as findings
 - If Verifier returns any `insufficient_evidence`, any P0/P1, or more than 2 rejected scanner findings, recommend rerunning in `deep` mode
 
 #### Deep Mode
@@ -363,7 +390,7 @@ Use quick mode rules:
 Run:
 
 1. Scanner
-2. Active specialist modules, with `edge-functions` active by default for feature and bug-fix logic
+2. Active specialist modules, with `edge-functions` active by default for feature and bug-fix logic, and `spec-alignment` active when a ticket or spec source is discoverable
 3. Merge and dedupe provisional findings
 4. Verifier
 5. Arbiter
@@ -422,7 +449,7 @@ removal_candidates: []
 summary: {}
 ```
 
-`stage` is one of `scanner`, `edge-functions`, `verifier`, or `arbiter`. Future specialist modules may add stage names, but their findings must remain scanner-compatible.
+`stage` is one of `scanner`, `edge-functions`, `spec-alignment`, `verifier`, or `arbiter`. Future specialist modules may add stage names, but their findings must remain scanner-compatible.
 
 Each item in `findings` must preserve these stable fields:
 
@@ -447,6 +474,18 @@ Stage-specific fields:
 
 Only append stage-specific data. Do not rename keys between stages. Specialist modules must emit scanner-compatible findings with `origin_module` populated; Verifier treats them as provisional first-lane claims.
 
+### Per-Finding Output Budget
+
+Each finding must be concise and evidence-dense:
+
+- `title`: one line, ≤80 characters
+- `trigger` + `failure_story` combined: ≤100 words
+- `counterargument`: ≤40 words (Scanner only)
+- Total finding block: ≤150 words
+- Stage `summary`: ≤200 words
+
+Verbose findings dilute signal. State the defect, the trigger, the wrong outcome, and the evidence location — nothing else.
+
 ## Final User Output
 
 Convert the final YAML-backed result into a short human-facing report:
@@ -457,8 +496,11 @@ Convert the final YAML-backed result into a short human-facing report:
 - Dismissed findings
 - Needs human review
 - Removal candidates if applicable
+- Spec alignment coverage if a ticket or spec was found: requirements met, missing, partial, or wrong; scope creep; ticket status
 - Whether a deeper rerun is recommended
 - Clear next-step options for the user
+
+Present spec-alignment findings under a separate `## Spec Alignment` heading. Do not merge spec findings into the general bug list — a change can pass every quality bar and still implement the wrong feature. Keeping the axes separate prevents one from masking the other.
 
 If the review is clean, state:
 
@@ -478,6 +520,8 @@ If the review is clean, state:
 8. **Review-first.** Never implement without explicit user confirmation.
 9. **Current-source discipline.** PR findings must be anchored to a specific head commit and rechecked for freshness before reporting.
 10. **Contract symmetry.** Caller/callee, frontend/backend, and export/import claims require evidence from both sides when available.
+11. **Spec-aware.** When a ticket or spec is discoverable, validate that the diff implements what was asked — not just that the code is well-written.
+12. **Repo-standards respect.** Documented repo conventions override fixed checklists; skip what tooling already enforces.
 
 ## Red Flags
 
@@ -494,6 +538,7 @@ If the review is clean, state:
 - Implement fixes before the user asks
 - Confirm P0/P1 findings without proving current source, reachability, and contract symmetry
 - Stop after rejecting stale findings without checking whether the same surface hides a different current bug
+- Merge spec-alignment findings into the general bug list, hiding a spec failure behind clean code
 
 ## Prompt Templates
 
@@ -502,6 +547,7 @@ If the review is clean, state:
 - `./prompts/contract-integration-prompt.md`
 - `./prompts/verifier-prompt.md`
 - `./prompts/arbiter-prompt.md`
+- `./prompts/spec-alignment-prompt.md`
 
 ## References
 

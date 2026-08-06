@@ -1,562 +1,163 @@
 ---
 name: trident
-description: Tool-aware, modular code review pipeline with quick/deep modes, adversarial edge-case review, independent verification, and evidence-based judgment.
+description: Review GitHub pull requests and git changes through deterministic risk triage, adaptive specialist lanes, independent verification, and evidence-backed verdicts. Use for PR review, local diff review, range review, or directory audit when correctness and maintainability matter.
 ---
 
 # Trident
 
-Three-pronged code review pipeline: **Scan -> Verify -> Judge**.
+Run a read-only pipeline: **Resolve -> Collect -> Triage -> Scan -> Verify ->
+Judge -> Complete -> Render**. The canonical result envelope and classifications
+live in [references/output-contract.md](references/output-contract.md); prompts
+must consume it rather than define a competing schema.
 
-Combines multi-lens scanning with independent verification to produce high-confidence findings while keeping false positives low.
+## 1. Resolve one Review Snapshot
 
-**Core principle:** Scan broadly, route to the right tools and specialist modules, verify independently, judge on evidence from real source files.
+Detect targets in this order: GitHub PR URL/number, explicit range, directory,
+staged, all-local, then unstaged. GitHub PR mode is GitHub-first: resolve the
+PR number, base/head refs and SHAs with `gh`, create a detached temporary
+worktree at the reviewed head, and register cleanup before dispatch. A local
+fallback may inspect resolvable refs when `gh` is unavailable, but must state
+that GitHub metadata and CI coverage are absent. Never claim a current PR review
+without a resolved head SHA.
 
-## When to Use
+## 2. Collect deterministic Triage Evidence
 
-- Code review of git changes, PRs, commit ranges, and staged diffs
-- Deep codebase audit for bugs, security issues, and logic errors
-- Post-implementation review of complex features
-- Security or correctness review before release
-- Reviews where false positives are more expensive than missing minor style issues
-
-**Do not use for:** style-only reviews, trivial one-line changes, or generic "improve code quality" requests without a review target.
-
-## Review Axes
-
-Trident has three separate axes:
-
-1. **Review mode**: what to review
-2. **Review depth**: how aggressively to review it
-3. **Active modules**: which specialist lenses to run
-
-### Review Modes
-
-Trident supports **6 review modes**:
-
-| Mode | Trigger | Primary Source | Notes |
-|------|---------|----------------|-------|
-| `unstaged` | Default when no target is specified | `git diff` | Working tree changes not yet staged |
-| `staged` | User says "staged" or unstaged diff is empty | `git diff --cached` | Changes staged for commit |
-| `all-local` | User says "all local" or "everything" | `git diff HEAD` | Staged plus unstaged |
-| `pr` | User provides PR URL/number or says "review PR" | `gh pr diff {N}` | Remote pull request review |
-| `range` | User provides `A..B`, branch, tag, or "since X" | `git diff {A}..{B}` | Multi-commit review |
-| `dir` | User provides a directory path | Source files in that path | Full directory audit |
-
-### Review Depths
-
-| Depth | Trigger | Pipeline | Use When |
-|-------|---------|----------|----------|
-| `quick` | User says "quick" or auto-selected for small local diffs | Scanner + active quick modules -> Verifier | Fast triage, small diffs, day-to-day reviews |
-| `deep` | User says "deep"/"full" or auto-selected for broad/risky scopes | Scanner + active deep modules -> Verifier -> Arbiter | PRs, ranges, directories, risky code, or disputed findings |
-
-**Auto-depth selection:**
-
-```text
-1. If user explicitly says "quick" or "fast" -> quick
-2. If user explicitly says "deep", "full", or "thorough" -> deep
-3. If mode is pr, range, or dir -> deep
-4. If changed files > 8 or changed lines > 250 -> deep
-5. If auth, billing, persistence, migrations, or concurrency paths are involved -> deep
-6. Otherwise -> quick
-```
-
-### Core Chain and Specialist Modules
-
-Trident has a fixed core chain plus optional specialist modules. Do **not** treat the core itself as a module:
-
-1. `Scanner` creates provisional findings.
-2. `Verifier` contests every Scanner and module finding.
-3. `Arbiter` runs in `deep` mode and contests both prior stages.
-
-Specialist modules feed provisional findings, test ideas, or coverage gaps into the core. They never bypass the Verifier.
-
-Every module must declare both `quick` and `deep` behavior:
-
-| Module | Activate When | Quick Use | Deep Use |
-|--------|---------------|-----------|----------|
-| `edge-functions` | Functions, handlers, validators, bug fixes, new feature logic | Validate the essential path plus the top 3 non-happy inputs/states; max 4 module findings | Avoid happy-path bias; build an adversarial matrix across boundary, ordering, failure, auth, and concurrency states; include one essential smoke path |
-| `security-trust` | Auth, tenant/ownership, input, files, URLs, secrets, permissions | Inspect changed trust boundary and immediate callers | Trace attacker-controlled data, authz matrix, config/dependency risk, and cross-boundary failure modes |
-| `data-integrity` | Persistence, migrations, queues, billing, counters, state machines | Check transactions, idempotency, and direct write ordering | Trace retries, partial writes, races, rollback paths, backfills, and migration compatibility |
-| `contract-integration` | API schemas, SDKs, webhooks, clients, jobs, external services | Check caller/callee contract, error shape, and version assumptions | Read local docs plus official external docs when relevant; verify timeout, retry, pagination, and compatibility behavior |
-| `ui-runtime` | UI state, forms, routing, browser behavior, frontend data flow | Check critical render/interaction path and obvious empty/error states | Exercise invalid, empty, loading, permission, responsive, accessibility, and browser-runtime states with browser tools when available |
-| `removal-dead-code` | Deletions, deprecated paths, unused branches, simplification requests | Only report obvious removal candidates from touched scope | Search call sites, tests, route/config registration, history, and produce a safe deletion plan |
-| `spec-alignment` | Linked ticket, issue ref, PRD, or spec file discoverable | Check if top-level requirements from the ticket are addressed; report missing core items only | Extract all requirements, check coverage per item, flag scope creep, validate ticket status and acceptance criteria |
-
-Load `references/module-playbook.md` when module selection is unclear or the review needs a deeper checklist.
-
-### Tool Selection Rules
-
-Use the lightest tool that can prove or disprove the claim. Build a short `TOOL_PLAN` before dispatching agents.
-
-| Evidence Need | Quick Tooling | Deep Tooling |
-|---------------|---------------|--------------|
-| Scope and intent | `git status`, `git diff --stat`, focused `git diff`, PR metadata | commit history, branch comparison, PR discussion/checks when available |
-| Locate source and callers | `rg --files`, `rg`, direct file reads | broader call graph search, route/config registration, generated types, package boundaries |
-| Behavior verification | smallest relevant unit/test/typecheck command from repo scripts | focused tests plus lint/typecheck/build for touched package; add reproduction or table tests when cheap |
-| External API/SDK/framework behavior | local docs and source contracts | official docs first, then current repo usage; do not guess unstable API behavior |
-| UI/runtime behavior | source inspection and existing tests | browser/screenshot/interaction tools for visible regressions when available |
-| CI/PR state | `gh pr view`, `gh pr diff` | `gh pr checks`, failing logs, unresolved review threads when relevant |
-| Data/migrations | schema/migration files and local dry-run tools | migration rollback/compatibility checks, fixture or local DB verification when safe |
-
-If a useful tool is unavailable, record the gap in `{CONTEXT}` and compensate with source evidence. Never fabricate tool output.
-
-## How to Execute
-
-### Phase 1: Scope and Preflight
-
-Before dispatching agents, determine both `REVIEW_MODE` and `REVIEW_DEPTH`.
-
-#### Step 1: Detect Review Mode
-
-Use this order:
-
-```text
-1. GitHub PR URL -> pr
-2. PR number (#123) -> pr
-3. "PR" or "pull request" -> pr
-4. Commit range (abc123..def456) -> range
-5. Branch/tag comparison language -> range
-6. Directory path -> dir
-7. "staged" -> staged
-8. "all" or "everything" -> all-local
-9. Default -> unstaged
-```
-
-#### Step 2: Preflight Tooling
-
-Validate prerequisites before gathering diff context:
+Run the bundled collector with the exact mode arguments:
 
 ```bash
-git rev-parse --show-toplevel
-git status -sb
-command -v rg
+python3 scripts/collect_triage.py --repo "$REPO_ROOT" --mode pr --pr "$PR_NUMBER" --base "$BASE_SHA" --head "$HEAD_SHA"
+python3 scripts/collect_triage.py --repo "$REPO_ROOT" --mode range --base "$BASE_SHA" --head "$HEAD_SHA"
+python3 scripts/collect_triage.py --repo "$REPO_ROOT" --mode unstaged
+python3 scripts/collect_triage.py --repo "$REPO_ROOT" --mode staged
+python3 scripts/collect_triage.py --repo "$REPO_ROOT" --mode all-local
+python3 scripts/collect_triage.py --repo "$REPO_ROOT" --mode dir --dir "$DIRECTORY"
+python3 scripts/triage_policy.py --input /path/to/triage-evidence.json --requested-depth quick
 ```
 
-Additional checks by mode:
+The Python 3 standard-library collector uses only read-only `git`, `gh`, and
+`rg` operations. Its `trident-triage-v2` JSON is deterministic and includes
+snapshot identity, complete manifest/line counts, package capabilities, native
+scripts, standards/spec candidates, exact-head CI evidence, objective risk
+signals, PR state, and structured blocked commands. It never includes full diff
+bodies or writes into the reviewed repository.
+
+Read [references/triage-rules.md](references/triage-rules.md). Produce exactly
+one Review Plan with a multidimensional Risk Map, axis-specific depth, required
+capabilities, topology, required checks, and a Check Disposition target for
+every check. `scripts/triage_policy.py` materializes the deterministic minimum
+plan; the model may add a concise escalation reason but may not remove a
+rule-required item. Display it and continue automatically; the plan is not an
+approval gate.
+
+## 3. Apply deterministic gates and budgets
+
+Correctness always runs. Maintainability always runs at baseline. Spec
+Alignment requires a valid Requirement Source; its absence is a resolved
+`spec_absent` gate and does not block other axes. Activate specialists from the
+triage rules, never from intuition alone. Compatible capabilities may share the
+Scanner, but every required capability must be represented and pass through the
+Verifier.
+
+Budgets are baseline 2, escalated 4, and deep 6 reviewer agents. A PR alone is
+not a deep signal. Exceed a ceiling only to settle a concrete P0/P1, a
+Maintainability blocker, or contradictory required evidence, and record the
+reason in the Review Plan.
+
+## 4. Discover standards, specs, and checks
+
+Use `rg --files` and `rg`, never ordinary `grep`, for repository guidance,
+ADRs, native scripts, workflows, specs, and issue references. Apply precedence:
+correctness/security/integrity invariants, valid requirements, ADRs and
+architectural constraints, repository standards, Thermo heuristics, then style.
+Configuration is only `configured`; tooling is `enforced` only when exact-head
+CI or a local execution proves it.
+
+Current CI may satisfy an applicable check only when it belongs to the exact
+head. Otherwise execute the narrowest discovered repository-native fallback:
+focused tests, then affected-package lint/typecheck/build. Record
+`executed`, `satisfied_by_ci`, `not_applicable`, `not_checked`, or `blocked` for
+each planned check. Do not invent commands.
+
+## 5. Scan and run activated lenses
+
+Dispatch [prompts/scanner-prompt.md](prompts/scanner-prompt.md) with the Review
+Snapshot, Triage Evidence, Coverage Manifest, and Review Plan. Load only
+activated specialist prompts. All lenses emit provisional axis-specific results
+with `id: null` and Coverage Gaps through the canonical envelope.
+
+When the Thermo Gate passes, invoke the
+`thermo-nuclear-code-quality-review` skill as a Maintainability lens, not the
+Verifier. Its handoff contains only the Review Snapshot, structural signals,
+relevant files, repository constraints, and the declared token budget. Map its
+output to `axis: maintainability` with `blocker|major|advisory`; never map it to
+P-severity correctness. Baseline Maintainability still runs when Thermo is
+inactive.
+
+Run `removal-dead-code` only for a changed deletion/deprecation or concrete
+Removal Candidate. Require its reachability matrix across references, exports,
+routes/jobs/DI/config, tests/docs, dynamic/reflection use, external consumers,
+telemetry, and history. Map only to `safe|defer|insufficient|not_removable`;
+text search alone cannot produce `safe`.
+
+The Attention Budget compresses P3, advisory, and low-confidence overflow. It
+never hides a verified blocker or mandatory requirement gap.
+
+## 6. Verify and judge
+
+Dispatch [prompts/verifier-prompt.md](prompts/verifier-prompt.md). The Verifier
+independently re-reads source, falsifies every provisional claim, preserves its
+axis, and assigns stable `COR-*`, `MNT-*`, `SPEC-*`, or `REM-*` IDs only after
+dedupe and verification. Rejected and insufficient claims remain auditable but
+are not findings.
+
+Run the Arbiter only for P0/P1, disputes, material insufficient evidence,
+high-risk structural blockers, or contradictory required evidence. The Arbiter
+is a final judge, never a replacement for verification.
+
+## 7. Refresh and complete
+
+Before final rendering, re-read the PR head. On movement, compute the old-to-new
+delta, rebuild affected manifest entries, and rerun invalidated lanes/checks;
+rerun the PR Baseline when invalidation is broad. Refresh at most twice; further
+movement ends with `review_superseded` and `no_verdict`. Verify detached
+worktree/temporary cleanup before declaring completion.
+
+Use the pure helpers in `scripts/review_state.py` to update the snapshot,
+compute `Review Completion`, derive the verdict, and render both Markdown views.
+`refresh_snapshot` invalidates affected results/checks; `compute_completion`
+requires currentness, manifest coverage, resolved gates, check dispositions,
+verified results, and cleanup; `derive_verdict` cannot approve partial or stale
+state.
+
+Read [references/output-contract.md](references/output-contract.md). Completion
+is `complete`, `partial`, `blocked`, or `review_superseded`, independent of the
+verdict. Approval requires complete/current state, resolved required gates,
+verified results, no P0/P1/P2 correctness result, no Maintainability blocker, no
+mandatory missing/wrong requirement, and no critical blocked/not-checked check.
+
+## 8. Render and publish only on request
 
-- `pr`: require `gh` and verify it can access the target PR
-- `range`: verify both refs resolve with `git rev-parse --verify`
-- `dir`: verify the directory exists inside the repository
+Return a compact Developer Review with verdict, current head, blockers, and
+check summary. Put P3/advisories/Coverage Gaps/supporting detail under
+`<details>`. When findings exist, also return one Remediation Markdown report
+using the same stable IDs and complete handoff context. Do not expose private
+chain-of-thought, emit a parallel JSON report, or write into the reviewed repo.
 
-If a prerequisite fails:
+GitHub publication (`gh pr review`, comments, approvals, or change requests)
+requires an explicit user request in the current task. The default execution is
+read-only.
 
-- Do not proceed with the full pipeline
-- Explain the missing dependency or invalid input
-- Offer the closest working fallback, such as reviewing a local diff instead
+## Completion criteria
 
-#### Step 3: Create a Reliable Source Root
-
-Track:
-
-- `REVIEW_MODE`
-- `REVIEW_DEPTH`
-- `REPO_ROOT`
-- `WORKTREE_DIR`
-- `TRIDENT_CREATED_WORKTREE`
-
-Initialize:
-
-```bash
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-WORKTREE_DIR="$REPO_ROOT"
-TRIDENT_CREATED_WORKTREE=0
-```
-
-For `pr` and `range`, create an isolated worktree in both `quick` and `deep` mode so all agents read real source files without disturbing the user's checkout.
-
-**Mode: `pr`**
-
-```bash
-WORKTREE_DIR="/tmp/trident-review-pr-${PR_NUMBER}-$(date +%s)"
-PR_HEAD_SHA="$(gh pr view "${PR_NUMBER}" --json headRefOid --jq .headRefOid)"
-git fetch origin "pull/${PR_NUMBER}/head"
-git worktree add "$WORKTREE_DIR" --detach FETCH_HEAD
-TRIDENT_CREATED_WORKTREE=1
-cd "$WORKTREE_DIR"
-REVIEWED_COMMIT="$(git rev-parse HEAD)"
-if [[ "$REVIEWED_COMMIT" != "$PR_HEAD_SHA" ]]; then
-  echo "Reviewed commit does not match PR head; refetch before reviewing" >&2
-  exit 1
-fi
-```
-
-**Mode: `range`**
-
-```bash
-WORKTREE_DIR="/tmp/trident-review-range-$(echo "${A}..${B}" | tr '/' '-')-$(date +%s)"
-git worktree add "$WORKTREE_DIR" "${B}"
-TRIDENT_CREATED_WORKTREE=1
-```
-
-For `unstaged`, `staged`, `all-local`, and `dir`, keep `WORKTREE_DIR="$REPO_ROOT"`.
-
-#### Step 4: Always Clean Up
-
-Register cleanup immediately after worktree creation so cleanup happens on success, failure, interrupt, or aborted pipeline:
-
-```bash
-cleanup_trident_worktree() {
-  if [[ "${TRIDENT_CREATED_WORKTREE}" == "1" && "$WORKTREE_DIR" == /tmp/trident-review-* ]]; then
-    git worktree remove "$WORKTREE_DIR" --force >/dev/null 2>&1 || true
-  fi
-}
-
-trap cleanup_trident_worktree EXIT INT TERM
-```
-
-Do not postpone cleanup until after reporting. Treat it like a `finally` block.
-
-### Phase 2: Gather Target and Context
-
-Gather executable context commands based on `REVIEW_MODE`.
-
-**Mode: `unstaged`**
-
-```bash
-git status -sb
-git diff --stat
-git diff
-```
-
-**Mode: `staged`**
-
-```bash
-git status -sb
-git diff --cached --stat
-git diff --cached
-```
-
-**Mode: `all-local`**
-
-```bash
-git status -sb
-git diff HEAD --stat
-git diff HEAD
-```
-
-**Mode: `pr`**
-
-```bash
-gh pr view "${PR_NUMBER}" --json title,body,author,baseRefName,headRefName,files,additions,deletions
-cd "$WORKTREE_DIR" && gh pr diff "${PR_NUMBER}"
-```
-
-**Mode: `range`**
-
-```bash
-git log --oneline "${A}..${B}"
-git diff --stat "${A}..${B}"
-git diff "${A}..${B}"
-```
-
-**Mode: `dir`**
-
-```bash
-rg --files "{DIR}" -g '*.ts' -g '*.tsx' -g '*.js' -g '*.jsx' -g '*.py' -g '*.go' -g '*.rb' -g '*.java' -g '*.kt' -g '*.rs' -g '*.php' | head -50
-```
-
-For all modes, enrich context with:
-
-1. Related call sites and contracts using `rg`
-2. Entry points, write paths, auth boundaries, and transaction boundaries
-3. PR metadata for `pr`
-4. Commit messages and intent for `range`
-5. High-risk paths such as auth, payments, persistence, migrations, or concurrency
-6. `ACTIVE_MODULES`, selected from the module table above
-7. `TOOL_PLAN`, including commands already run and useful tools that were unavailable
-8. `SOURCE_FRESHNESS`, including the reviewed commit SHA for `pr` and `range`
-   reviews and the latest PR head SHA when available
-9. `CONTRACT_SURFACE_MAP`, when the change crosses a runtime or API boundary:
-   enumerate producer, transport shape, consumer, and UI/runtime effect. For
-   server-driven collections, include filters, search, sort field names, sort
-   direction encoding, pagination, totals/KPIs, export flags, and response
-   metadata. This is mandatory for billing, reporting, persistence-backed
-   lists, and any frontend/backend contract.
-10. **Edge-case hypotheses** (borrowed from `systematic-debugging` / `tracer`):
-   for each modified unit, pre-seed `{CONTEXT}` with candidate failure inputs
-   across nullability, emptiness, numeric/collection/string boundaries, time,
-   concurrency, failure paths, auth, and input-trust classes. These seeds feed
-   the Scanner's mandatory Edge Case Enumeration pass and the `edge-functions`
-   module; they apply in both `quick` and `deep` mode.
-11. `REPO_STANDARDS`, discovered from repo documentation files: `CODING_STANDARDS.md`,
-    `CONTRIBUTING.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, or style guides under
-    `docs/`. Repo-documented standards override the fixed checklists — where a repo
-    endorses something a checklist would flag, suppress the smell.
-12. `TOOLING_ENFORCED`, detected from linter and type-checker configs: `.eslintrc*`,
-    `biome.json`, `ruff.toml`, `.golangci.yml`, `clippy.toml`, `.rubocop.yml`,
-    `tsconfig.json` strict flags, `.pre-commit-config.yaml`, `.husky/`, and CI
-    workflow files. The Scanner must skip reporting issues that configured tooling
-    already catches and blocks — focus on semantic, logic, and architectural
-    defects that tooling cannot detect.
-13. `SPEC_SOURCE`, discovered in priority order: (1) issue/ticket refs in commit
-    messages (`#123`, `Closes #45`, `Fixes #67`, `Resolves #89`) fetched via
-    `gh issue view {N}`; (2) PR description body for linked issues or spec
-    references; (3) branch-name ticket patterns (`feature/PROJ-123-*`,
-    `fix/456-*`); (4) spec files under `docs/specs/`, `specs/`, `.scratch/`, or
-    `PRD.md` matching the branch or feature name; (5) a path the user passed as
-    argument; (6) if nothing is found, ask the user. When a ticket is found,
-    validate it: fetch the full body, check status (open / closed / blocked),
-    extract acceptance criteria, and check for linked or superseding tickets. If
-    the ticket is closed or superseded, note this in `{CONTEXT}` and downgrade
-    spec-alignment confidence.
-
-#### Currentness and Reachability Gates
-
-Before accepting any P0/P1 finding, prove:
-
-1. The finding matches the reviewed source snapshot, not an older diff or
-   earlier PR comment.
-2. The trigger reaches production or user-visible code through imports, routes,
-   jobs, exports, config, or documented external use.
-3. Any cross-service or client/server contract claim is checked against both
-   sides when the peer source, schema, docs, or generated types are available.
-
-If one of these gates is not proven, downgrade the item to `needs_human_check`
-or `insufficient_evidence`; do not present it as a confirmed blocker.
-
-### Phase 3: Handle Scope Size Explicitly
-
-Use these edge-case rules:
-
-- **Empty diff**: If `unstaged` is empty, auto-try `staged`. If both are empty, ask whether to switch to `pr`, `range`, or `dir`.
-- **PR lookup failure**: report the exact `gh` failure and ask for a PR URL/number or local diff fallback.
-- **Invalid range**: stop and ask for a valid `A..B`.
-- **Large scope**: if changed files > 25, changed lines > 800, or `dir` mode returns > 80 candidate files, batch the review.
-
-#### Large-Scope Batching Procedure
-
-When batching is required:
-
-1. Group files by top-level module or feature area.
-2. Create batches capped at **12 files or 400 changed lines**, whichever comes first.
-3. Run **Scanner per batch** with `BATCH_ID` in `{CONTEXT}`.
-4. Run active specialist modules per batch only when the module has enough local context to be useful.
-5. Merge Scanner and module outputs into one provisional finding set.
-6. Dedupe provisional findings using this key:
-   - normalized category
-   - normalized file path
-   - normalized trigger or claim
-7. Run one Verifier pass on the deduped set.
-8. In `deep` mode, run Arbiter only on:
-   - all P0 and P1 findings
-   - all disputed findings
-   - any finding with verifier confidence `low`
-
-Do not send duplicated findings from separate batches to the final report.
-
-### Phase 4: Build Prompt Placeholders
-
-Construct these placeholders for every stage:
-
-- `{TARGET}`: diff text, file list, or directory scope
-- `{CONTEXT}`: review metadata, intent, and risk notes
-- `{REVIEW_MODE}`: one of the 6 supported modes
-- `{REVIEW_DEPTH}`: `quick` or `deep`
-- `{WORKTREE_DIR}`: absolute path to the source root agents must inspect
-- `{ACTIVE_MODULES}`: selected specialist modules and their quick/deep contracts
-- `{TOOL_PLAN}`: tools/commands to use, tools already run, and unavailable-tool gaps
-- `{MODULE_OUTPUTS}`: provisional YAML outputs from specialist modules, when present
-- `{REPO_STANDARDS}`: repo-documented standards files and their key rules
-- `{TOOLING_ENFORCED}`: linters/type-checkers already active and what they catch
-- `{SPEC_SOURCE}`: discovered ticket/PRD/spec and extracted requirements, or `none`
-
-### Phase 5: Dispatch Pipeline
-
-#### Quick Mode
-
-Run:
-
-1. Scanner
-2. Active specialist modules that are cheap enough for `quick`
-3. Merge and dedupe provisional findings
-4. Verifier
-
-Use quick mode rules:
-
-- Focus on changed files and immediate cross-file effects
-- Cap findings at **6**
-- Skip dead-code hunting unless it is obvious from the touched scope
-- Scanner must still run the **Edge Case Enumeration** pass (see scanner prompt)
-  against every modified unit, using the Boundary Conditions section of
-  `references/code-quality-checklist.md` plus the hypothesis seeds from Phase 2
-- If `edge-functions` is active, run `prompts/edge-functions-prompt.md` or fold its quick checklist into Scanner when separate dispatch is not practical
-- Validate that the essential happy path still works, then spend the remaining effort on non-happy paths
-- If `spec-alignment` is active, run `prompts/spec-alignment-prompt.md` to check
-  that core ticket requirements are addressed; report missing items as findings
-- If Verifier returns any `insufficient_evidence`, any P0/P1, or more than 2 rejected scanner findings, recommend rerunning in `deep` mode
-
-#### Deep Mode
-
-Run:
-
-1. Scanner
-2. Active specialist modules, with `edge-functions` active by default for feature and bug-fix logic, and `spec-alignment` active when a ticket or spec source is discoverable
-3. Merge and dedupe provisional findings
-4. Verifier
-5. Arbiter
-6. Source freshness check before final reporting
-
-Use deep mode rules:
-
-- Full multi-lens scan
-- Up to **15 findings**
-- Dead-code and removal candidates enabled
-- Avoid happy-path bias: validate the essential path once, then prioritize unusual inputs, failed dependencies, boundary sizes, ordering, retries, and permission changes
-- For client/server or cross-package behavior, activate `contract-integration`
-  and trace the full contract map instead of checking only the changed caller.
-- Arbiter re-inspects every disputed high-severity item and any finding escalated by the Verifier
-- If two or more P0/P1 findings are rejected as stale, unreachable, or
-  contradicted by current source, run a focused missed-risk sweep over the same
-  high-risk surfaces before final reporting. The sweep must look for defects
-  not already represented in Scanner output, especially contract mismatches and
-  server-side collection semantics.
-
-### Phase 5.5: Source Freshness Check
-
-For `pr` mode, re-read the PR head before presenting the final report:
-
-```bash
-LATEST_PR_HEAD_SHA="$(gh pr view "${PR_NUMBER}" --json headRefOid --jq .headRefOid)"
-test "$LATEST_PR_HEAD_SHA" = "$REVIEWED_COMMIT"
-```
-
-If the PR changed during review, do not claim the review is current. Either
-rerun the affected stages against the new head or state that findings are tied
-to `REVIEWED_COMMIT` and may be stale.
-
-### Phase 6: Present to User
-
-After the final stage:
-
-- In `quick` mode, present the Verifier-backed review and clearly flag whether a deep review is recommended.
-- In `deep` mode, present the Arbiter-backed verdicts.
-- Do **not** implement fixes until the user explicitly asks for changes.
-
-## Shared Output Contract
-
-All agents must emit a single fenced `yaml` block and preserve stable fields across stages.
-
-Required top-level keys:
-
-```yaml
-schema_version: trident-v2
-stage: scanner
-review_mode: unstaged
-review_depth: quick
-active_modules: []
-findings: []
-removal_candidates: []
-summary: {}
-```
-
-`stage` is one of `scanner`, `edge-functions`, `spec-alignment`, `verifier`, or `arbiter`. Future specialist modules may add stage names, but their findings must remain scanner-compatible.
-
-Each item in `findings` must preserve these stable fields:
-
-```yaml
-- bug_id: BUG-01
-  origin_module: scanner
-  title: Short bug title
-  location: path/to/file.ext:123
-  category: security
-  severity: P1
-  scanner: {}
-  verifier: {}
-  arbiter: {}
-```
-
-Stage-specific fields:
-
-- `origin_module`: `scanner` or the specialist module that produced the provisional claim
-- `scanner.status`: `confirmed` or `suspicious`
-- `verifier.status`: `confirmed`, `rejected`, or `insufficient_evidence`
-- `arbiter.verdict`: `real_bug`, `not_a_bug`, or `needs_human_check`
-
-Only append stage-specific data. Do not rename keys between stages. Specialist modules must emit scanner-compatible findings with `origin_module` populated; Verifier treats them as provisional first-lane claims.
-
-### Per-Finding Output Budget
-
-Each finding must be concise and evidence-dense:
-
-- `title`: one line, ≤80 characters
-- `trigger` + `failure_story` combined: ≤100 words
-- `counterargument`: ≤40 words (Scanner only)
-- Total finding block: ≤150 words
-- Stage `summary`: ≤200 words
-
-Verbose findings dilute signal. State the defect, the trigger, the wrong outcome, and the evidence location — nothing else.
-
-## Final User Output
-
-Convert the final YAML-backed result into a short human-facing report:
-
-- Files reviewed and overall assessment
-- Reviewed commit or diff source, and whether it was still current at report time
-- Confirmed bugs
-- Dismissed findings
-- Needs human review
-- Removal candidates if applicable
-- Spec alignment coverage if a ticket or spec was found: requirements met, missing, partial, or wrong; scope creep; ticket status
-- Whether a deeper rerun is recommended
-- Clear next-step options for the user
-
-Present spec-alignment findings under a separate `## Spec Alignment` heading. Do not merge spec findings into the general bug list — a change can pass every quality bar and still implement the wrong feature. Keeping the axes separate prevents one from masking the other.
-
-If the review is clean, state:
-
-- what was checked
-- what was not checked
-- residual risks or follow-up tests worth running
-
-## Design Principles
-
-1. **Independent re-inspection.** Each agent reads real source files from `WORKTREE_DIR`.
-2. **Executable orchestration.** Examples and shell commands should be directly runnable.
-3. **Bounded recall.** Quick mode stays small; deep mode stays selective.
-4. **Evidence-based claims.** Every finding needs a location, trigger, and failure story.
-5. **Forced counterarguments.** Scanner must explain the strongest reason it could be wrong.
-6. **Permission to abstain.** Verifier and Arbiter can preserve ambiguity rather than invent certainty.
-7. **Robust cleanup.** Temporary worktrees are always cleaned up.
-8. **Review-first.** Never implement without explicit user confirmation.
-9. **Current-source discipline.** PR findings must be anchored to a specific head commit and rechecked for freshness before reporting.
-10. **Contract symmetry.** Caller/callee, frontend/backend, and export/import claims require evidence from both sides when available.
-11. **Spec-aware.** When a ticket or spec is discoverable, validate that the diff implements what was asked — not just that the code is well-written.
-12. **Repo-standards respect.** Documented repo conventions override fixed checklists; skip what tooling already enforces.
-
-## Red Flags
-
-**Never:**
-
-- Skip verification and surface Scanner output directly to the user
-- Let agents cite diff offsets as source lines
-- Use vague pseudo-shell examples that are not executable
-- Leave large-diff batching unspecified
-- Keep temporary worktrees around after interruption or failure
-- Force the full three-stage pipeline for every tiny review
-- Run specialist modules without sending their findings through Verifier
-- Spend deep mode mostly on happy-path validation
-- Implement fixes before the user asks
-- Confirm P0/P1 findings without proving current source, reachability, and contract symmetry
-- Stop after rejecting stale findings without checking whether the same surface hides a different current bug
-- Merge spec-alignment findings into the general bug list, hiding a spec failure behind clean code
-
-## Prompt Templates
-
-- `./prompts/scanner-prompt.md`
-- `./prompts/edge-functions-prompt.md`
-- `./prompts/contract-integration-prompt.md`
-- `./prompts/verifier-prompt.md`
-- `./prompts/arbiter-prompt.md`
-- `./prompts/spec-alignment-prompt.md`
+Finish only when the snapshot is current, every manifest entry is accounted for,
+all gates are explicit, every planned check has a disposition, every reported
+result is verified, rendering is complete, and temporary state is cleaned up.
 
 ## References
 
-| File | Purpose |
-|------|---------|
-| `references/solid-checklist.md` | SOLID smell prompts and refactor heuristics |
-| `references/security-checklist.md` | Web/app security and runtime risk checklist |
-| `references/code-quality-checklist.md` | Error handling, performance, and boundary conditions |
-| `references/removal-plan.md` | Template for deletion candidates and follow-up plan |
-| `references/tool-playbook.md` | Tool selection guidance for quick and deep reviews |
-| `references/module-playbook.md` | Specialist module activation and quick/deep checklists |
-| `references/edge-functions-checklist.md` | Adversarial function-breaking matrix for robust features and bug fixes |
+- [references/output-contract.md](references/output-contract.md): canonical envelope, IDs, lifecycle, and rendering.
+- [references/review-contract.md](references/review-contract.md): gates, evidence, freshness, and cleanup.
+- [references/triage-rules.md](references/triage-rules.md): deterministic signals, Risk Map, capabilities, and budgets.
+- [references/module-playbook.md](references/module-playbook.md): specialist activation and contracts.
+- [references/tool-playbook.md](references/tool-playbook.md): evidence-tool selection and freshness.
+- [references/removal-plan.md](references/removal-plan.md): Removal Gate evidence matrix.

@@ -1,7 +1,7 @@
 interface:
   display_name: "Trident"
-  short_description: "Tool-aware code review with quick/deep specialist modules and evidence-based verdicts"
-  default_prompt: "Review current git changes with Trident. Select the right tools and modules, use quick mode for small local diffs, and deep mode for PRs, ranges, directories, risky code paths, or edge-case-heavy logic."
+  short_description: "Risk-triaged PR review with adaptive verification and concise verdicts"
+  default_prompt: "Review the target with Trident. Start with deterministic risk triage, activate only required specialist capabilities, verify findings independently, and return a compact developer review plus a detailed remediation report when findings exist."
 
 # Agent-agnostic skill - works with any LLM provider.
 # No provider-specific configuration required.

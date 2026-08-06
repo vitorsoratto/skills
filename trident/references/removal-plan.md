@@ -1,52 +1,40 @@
-# Removal and Iteration Plan Template
+# Removal Gate Evidence Matrix
 
-## Priority Levels
+Removal is a downstream decision, not a broad dead-code scan and not a
+correctness severity. A candidate is safe only after all applicable evidence is
+collected and independently verified.
 
-- [ ] **P0**: Immediate removal needed (security risk, significant cost, blocking other work)
-- [ ] **P1**: Remove in current sprint
-- [ ] **P2**: Backlog / next iteration
+## Candidate record
 
----
+Use the canonical envelope with:
 
-## Safe to Remove Now
+- `axis: removal` and `kind: removal_candidate`;
+- `classification: safe|defer|insufficient|not_removable`;
+- a relevant path, symbol, and line anchor;
+- current behavior, trigger, expected behavior, impact, constraints, and
+  bounded next action;
+- `evidence` entries for every reachability check and exact verification command.
 
-### Item: [Name/Description]
+## Required reachability checks
 
-| Field | Details |
-|-------|---------|
-| **Location** | `path/to/file.ts:line` |
-| **Rationale** | Why this should be removed |
-| **Evidence** | Unused (no references), dead feature flag, deprecated API |
-| **Impact** | None / Low - no active consumers |
-| **Deletion steps** | 1. Remove code 2. Remove tests 3. Remove config |
-| **Verification** | Run tests, check no runtime errors, monitor logs |
+- direct references and imports/exports;
+- routes, jobs, dependency injection, registration, configuration, and generated
+  registries;
+- tests, fixtures, snapshots, documentation, examples, and migrations;
+- dynamic/reflection use, string-based lookup, feature flags, and telemetry;
+- public API/SDK consumers and relevant history;
+- base-snapshot comparison for deleted paths;
+- focused tests or package checks that prove the preserved behavior.
 
----
+## Outcomes
 
-## Defer Removal (Plan Required)
+| Classification | Meaning |
+|---|---|
+| `safe` | Reachability and impact evidence supports removal and verification is recorded. |
+| `defer` | A consumer, migration, telemetry window, or owner decision remains. |
+| `insufficient` | Evidence is missing or a tool/check is blocked. |
+| `not_removable` | The candidate is reachable, externally owned, or removal violates a constraint. |
 
-### Item: [Name/Description]
-
-| Field | Details |
-|-------|---------|
-| **Location** | `path/to/file.ts:line` |
-| **Why defer** | Active consumers, needs migration, stakeholder sign-off |
-| **Preconditions** | Feature flag off for 2 weeks, telemetry shows 0 usage |
-| **Breaking changes** | List any API/contract changes |
-| **Migration plan** | Steps for consumers to migrate |
-| **Timeline** | Target date or sprint |
-| **Owner** | Person/team responsible |
-| **Validation** | Metrics to confirm safe removal (error rates, usage counts) |
-| **Rollback plan** | How to restore if issues found |
-
----
-
-## Checklist Before Removal
-
-- [ ] Searched codebase for all references (`rg`, `grep`)
-- [ ] Checked for dynamic/reflection-based usage
-- [ ] Verified no external consumers (APIs, SDKs, docs)
-- [ ] Feature flag telemetry reviewed (if applicable)
-- [ ] Tests updated/removed
-- [ ] Documentation updated
-- [ ] Team notified (if shared code)
+Never call code safe from a text search alone. Do not prescribe an unrelated
+refactor. The final Remediation Report includes dependencies, rollback or
+migration preconditions, and the exact discovered checks.

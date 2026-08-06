@@ -31,7 +31,8 @@ For each changed function, handler, validator, mapper, or branch, test mentally 
 ## Quick Mode
 
 - Pick the top 3 extraordinary classes that best match the changed code.
-- Emit at most 4 findings.
+- Apply the Attention Budget only to low-confidence or P3 results; never omit
+  a verified blocker.
 - If no concrete bug is found, summarize the highest-risk unchecked class in `areas_not_covered`.
 
 ## Deep Mode

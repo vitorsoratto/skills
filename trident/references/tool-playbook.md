@@ -76,7 +76,7 @@ git log --oneline --grep='Closes\|Fixes\|Resolves' {A}..{B}
 gh issue view {N} --json title,body,state,labels,assignees
 
 # Check for linked or blocking issues
-gh issue view {N} | grep -iE 'blocked|supersedes|related|depends'
+gh issue view {N} --json body --jq .body | rg -i 'blocked|supersedes|related|depends'
 
 # PR description for spec references (pr mode)
 gh pr view {PR_NUMBER} --json body

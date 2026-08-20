@@ -20,6 +20,14 @@ MongoDB expert advisor with fact-checked, version-aware guidance. Enforces a res
 npx skills add vitorsoratto/skills --skill mongodb-expert
 ```
 
+### criar-ticket
+
+Entrevista objetiva para o suporte transformar uma solicitação em um ticket claro, pronto para copiar no ClickUp.
+
+```bash
+npx skills add vitorsoratto/skills --skill criar-ticket
+```
+
 ## Install
 
 List all available skills:

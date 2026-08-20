@@ -1,0 +1,5 @@
+interface:
+  display_name: "Criar Ticket"
+  short_description: "Transforma solicitações de suporte em tickets claros"
+policy:
+  allow_implicit_invocation: false

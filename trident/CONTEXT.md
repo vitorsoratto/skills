@@ -1,6 +1,6 @@
 # Trident Review System
 
-Trident is an evidence-gated code review process that separates discovery, independent verification, and final judgment so review conclusions remain traceable and resistant to false positives.
+Trident is an execution-first code review process: it builds context about how the system works, proves the changed behavior by running it, and reports only claims an independent replay confirms, so conclusions stay traceable and resistant to false positives. Design evidence: references/evidence-basis.md.
 
 ## Language
 
@@ -9,12 +9,68 @@ The immutable source state and comparison boundary against which every review cl
 _Avoid_: Current code, latest diff, review target
 
 **Core Chain**:
-The fixed Scan, Verify, and Judge sequence that turns provisional claims into final review conclusions.
-_Avoid_: Core module, review module
+The fixed Context, Prove, and Replay sequence that turns suspicions into final review conclusions.
+_Avoid_: Scan/Verify/Judge, reviewer debate
 
-**Review Lens**:
-An optional perspective that inspects a Review Snapshot and emits provisional findings or coverage gaps into the Core Chain.
-_Avoid_: Core stage, reviewer
+**System Map**:
+The persistent per-repository record of flows, architecture, contracts, operations, and hazards, kept outside the repository and refreshed section by section when its anchors change.
+_Avoid_: Repository summary, one-off context dump
+
+**Change Context Brief**:
+The per-review account of intent, affected flows, contracts on both sides, safety facts, existing coverage, and how to exercise each flow, built before any hypothesis.
+_Avoid_: Diff summary, file list
+
+**Impact Set**:
+Every place the changed behavior can reach: confirmed usages of changed symbols, readers and writers of changed data, and the entry points above them; the only scope Trident tests.
+_Avoid_: Whole codebase, changed files only
+
+**Equivalence Class**:
+Usages of a changed unit that share the same configuration and inputs, proven through one representative.
+_Avoid_: Sampling at random
+
+**Affected Flow**:
+A path from a real entry point (route, command, job, screen, public API) through changed symbols to a sink (storage, response, event, rendered state).
+_Avoid_: Changed file, touched function
+
+**Safety Fact**:
+One of the few facts a change is safe because of; each becomes a proof target.
+_Avoid_: Assumption, general risk
+
+**Risk Question**:
+A capability-specific hypothesis prompt the Prover turns into a runnable prediction or drops.
+_Avoid_: Review Lens, checklist item to report
+
+**Proof Level**:
+How far a claim's central fact was pushed: asserted, anchored, traced, executed, or reproduced.
+_Avoid_: Confidence label
+
+**Proof Recipe**:
+The runnable form of a proof: files to add, setup, one command, and the expected outcome at head and base with a failure signature.
+_Avoid_: Verification guidance prose
+
+**Behavior Proof**:
+Executed evidence that an Affected Flow, required proof, acceptance criterion, or stress case behaves as intended.
+_Avoid_: Test suite passed, it compiles
+
+**Stress Profile**:
+The risk-selected set of boundary, repetition, concurrency, failure-injection, and volume runs applied to the riskiest Affected Flow.
+_Avoid_: Load test by default
+
+**Replay**:
+Independent verification by re-running every Proof Recipe in fresh worktrees without the prover's reasoning.
+_Avoid_: Verifier rereading code, Arbiter
+
+**Differential Proof**:
+A replay at both base and head that shows whether the change introduced a behavior or it was preexisting.
+_Avoid_: Path overlap, blame guess
+
+**Unproven Risk**:
+A severe claim or approval-critical Behavior Proof that execution could not settle; it prevents approval without requesting changes.
+_Avoid_: Finding, ignored suspicion
+
+**Execution Trust Gate**:
+The rule that PR code runs only for same-repository PRs, local modes, or forks the user explicitly allowed.
+_Avoid_: Run everything, sandbox assumed
 
 **Evidence Gate**:
 A checkable condition that must pass before a claim can advance to a stronger status or severity.
@@ -69,7 +125,7 @@ The repository-native, affected-scope verification executed when Current CI Evid
 _Avoid_: Full suite by default, invented command
 
 **PR Baseline**:
-The mandatory delta-aware review work performed for every pull request regardless of optional lens activation.
+The mandatory delta-aware review work performed for every pull request regardless of optional capability activation.
 _Avoid_: Quick review, shallow review
 
 **Risk Escalation**:
@@ -89,7 +145,7 @@ The bundled Python 3 standard-library program that gathers Triage Evidence throu
 _Avoid_: Reviewer agent, project dependency
 
 **Review Plan**:
-The checkable declaration of active axes, lenses, tools, verification sources, agent topology, and escalation gates selected by Review Triage.
+The checkable declaration of active axes, capabilities, required checks and Behavior Proofs, stress profile, agent topology, and escalation gates selected by Review Triage.
 _Avoid_: Free-form tool plan, implicit module choice
 
 **Risk Map**:
@@ -97,7 +153,7 @@ The multidimensional Review Triage result covering scope, correctness, contracts
 _Avoid_: Diff size score, one global depth
 
 **Adaptive Topology**:
-The agent arrangement that begins with a shared baseline Scanner and Verifier, then opens independent lanes only when a gate, complexity signal, or explicit depth requires them.
+The agent arrangement that begins with one Prover and one Replay agent, then adds parallel Provers split by Affected Flow only when the Review Plan requires them.
 _Avoid_: One agent per axis by default, one global agent always
 
 **Execution Budget**:
@@ -109,12 +165,12 @@ The Maintainability Risk Escalation triggered by explicit depth, structural grow
 _Avoid_: Always-on harsh review, style pass
 
 **Provisional Finding**:
-A source-backed claim produced by Scan or a Review Lens that has not yet passed independent verification.
+A claim from a Prover, with a Proof Recipe or traced path, that has not yet passed Replay.
 _Avoid_: Bug, confirmed finding
 
 **Verified Finding**:
-A Provisional Finding that survived independent falsification against the Review Snapshot.
-_Avoid_: Scanner finding, likely bug
+A Provisional Finding whose proof Replay confirmed against the Review Snapshot.
+_Avoid_: Prover finding, likely bug
 
 **Review Result**:
 The shared evidence envelope carrying one axis-specific result kind through verification and reporting.
@@ -177,8 +233,8 @@ The completeness check that ensures another coding agent can resolve a finding w
 _Avoid_: Implementation plan for the whole PR, speculative rewrite
 
 **Triage Rule**:
-An explicit signal-to-capability mapping that establishes the minimum required review lane, tool, or check for a Review Plan.
-_Avoid_: Model intuition only, optional mandatory lane
+An explicit signal-to-capability mapping that establishes the minimum required Risk Questions, Behavior Proofs, or checks for a Review Plan.
+_Avoid_: Model intuition only, optional mandatory proof
 
 **Coverage Gap**:
 An explicitly unverified area that limits confidence without itself being a finding.
@@ -226,8 +282,8 @@ _Avoid_: Dead-code scan, automatic deletion
 - A valid Requirement Source requires the `spec-alignment` capability
 - A behavioral change without corresponding test evidence requires focused test verification and may produce a Coverage Gap
 - **Risk Escalation** applies independently to Correctness, Maintainability, or Spec Alignment
-- **Adaptive Topology** uses a shared Correctness and Maintainability baseline lane, with independent Spec, thermo-depth, Removal, specialist-verification, or deep lanes activated by the Review Plan
-- **Execution Budget** allows two reviewer agents for baseline, four for escalated, and six for deep
+- **Adaptive Topology** uses one Prover and one Replay agent at baseline, adding parallel Provers per Affected Flow, a Context Mapper, and base-differential replay as the Review Plan escalates
+- **Execution Budget** allows two agents for baseline, four for escalated, and six for deep; tokens are spent on running proofs, not on additional reviewers
 - An **Execution Budget** may be exceeded only to settle a concrete P0/P1 bug, Maintainability blocker, or contradictory required evidence, and the Review Plan records that escalation
 - A changed pull-request head triggers **Snapshot Refresh** before any current verdict is reported
 - **Snapshot Refresh** may occur at most twice; further head movement ends the run as `review_superseded`
@@ -237,9 +293,15 @@ _Avoid_: Dead-code scan, automatic deletion
 - The **Local Verification Fallback** prefers focused tests and affected-package checks over repository-wide execution
 - Repository-wide verification is reserved for high-risk changes or the absence of a narrower authoritative command
 - Every planned verification has exactly one **Check Disposition**
-- The **Core Chain** evaluates zero or more **Provisional Findings**
-- A **Review Lens** produces zero or more **Provisional Findings** and **Coverage Gaps**
-- A **Provisional Finding** becomes a **Verified Finding** only after the applicable **Evidence Gates** pass
+- Every review refreshes the stale or touched sections of the **System Map** and writes a **Change Context Brief** before any hypothesis
+- Every source change has at least one **Behavior Proof** per **Affected Flow**
+- A **Prover** produces zero or more **Provisional Findings**, **Behavior Proofs**, and **Coverage Gaps**
+- A suspicion that cannot be stated as a runnable or traceable prediction is dropped, not reported
+- A **Provisional Finding** becomes a **Verified Finding** only when **Replay** confirms its **Proof Recipe**
+- A blocking correctness result needs **Proof Level** executed or reproduced, or traced with a recorded execution blocker, and a confirming **Replay**; otherwise it becomes an **Unproven Risk**
+- A Maintainability blocker cites a documented repository rule
+- Disagreements are settled by a discriminating run, never by debate
+- An **Unproven Risk** prevents `approve` and yields `comment`
 - Every **Review Result** belongs to exactly one **Review Axis** and one result kind
 - Correctness bugs use P0-P3; Maintainability concerns, Spec gaps, Removal Candidates, and Coverage Gaps use axis-specific classifications
 - The **Attention Budget** may compress advisory, P3, or low-confidence results but never omits verified P0/P1 bugs, Maintainability blockers, or mandatory Spec gaps
@@ -247,7 +309,7 @@ _Avoid_: Dead-code scan, automatic deletion
 - `complete` requires a current Review Snapshot, an explicit Coverage Manifest, resolved required gates, a Check Disposition for every planned verification, verified reported results, and completed temporary-worktree cleanup
 - `partial` may report useful results but can never claim the reviewed change is clean
 - **Review Completion** does not imply approval; only the **Approval Gate** may authorize an approval recommendation
-- The **Approval Gate** requires `Review Completion: complete`, a current Review Snapshot, no P0/P1/P2 Correctness bug, no Maintainability blocker, no missing or wrong mandatory requirement, and no critical verification with `blocked` or `not_checked` disposition
+- The **Approval Gate** requires `Review Completion: complete`, a current Review Snapshot, no P0/P1/P2 Correctness bug, no Maintainability blocker, no missing or wrong mandatory requirement, no required check with `blocked` or `not_checked` disposition, no failed Behavior Proof, and no Unproven Risk
 - P3 Correctness bugs and Maintainability advisories may remain when the approval recommendation identifies them explicitly as non-blocking
 - A **Review Verdict** is exactly one of `approve`, `request_changes`, `comment`, or `no_verdict`
 - `approve` requires the **Approval Gate** to pass
@@ -296,11 +358,11 @@ _Avoid_: Dead-code scan, automatic deletion
 
 ## Example dialogue
 
-> **Reviewer:** "The maintainability lens found a wrapper that may be removable. Is that a bug?"
-> **Trident:** "No. It is a Removal Candidate until reachability and impact evidence pass; only then can the Core Chain judge the recommendation."
+> **Reviewer:** "The Prover thinks a redelivered webhook charges twice. Is that a bug?"
+> **Trident:** "Not yet. It becomes a finding when its Proof Recipe fails at head with the charged-twice signature and Replay confirms it; if no environment can run it, it is an Unproven Risk."
 
 ## Flagged ambiguities
 
 - No unresolved product ambiguity remains from the grilling session. The exact
-  deterministic mapping from Risk Map signals to tools, lanes, and checks is
+  deterministic mapping from Risk Map signals to Risk Questions, Behavior Proofs, and checks is
   executable in `references/triage-rules.md` and `scripts/collect_triage.py`.

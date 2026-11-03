@@ -23,10 +23,14 @@ COMMAND_TIMEOUT = 20
 
 def run(repo: Path, *command: str, timeout: int = COMMAND_TIMEOUT) -> dict[str, Any]:
     """Run one read-only command and serialize failures as evidence."""
+    if command and command[0] == "git":
+        # Print non-ASCII paths as-is (e.g. "sessão.md") instead of octal escapes.
+        command = ("git", "-c", "core.quotePath=false", *command[1:])
     try:
         result = subprocess.run(
             command,
             cwd=repo,
+            stdin=subprocess.DEVNULL,
             text=True,
             capture_output=True,
             timeout=timeout,
@@ -112,12 +116,21 @@ def parse_name_status(text: str) -> list[dict[str, str]]:
 
 
 def parse_numstat(text: str) -> dict[str, tuple[int | None, int | None]]:
+    """Parse `git diff --numstat -z`; renames carry the old and new path as extra fields."""
     stats: dict[str, tuple[int | None, int | None]] = {}
-    for line in text.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 3:
+    fields = text.split("\0")
+    index = 0
+    while index < len(fields):
+        parts = fields[index].split("\t")
+        index += 1
+        if len(parts) != 3:
             continue
-        added, deleted, path = parts[0], parts[1], parts[-1]
+        added, deleted, path = parts
+        if not path:
+            if index + 1 >= len(fields):
+                break
+            path = fields[index + 1]
+            index += 2
         stats[path] = (
             int(added) if added.isdigit() else None,
             int(deleted) if deleted.isdigit() else None,
@@ -140,16 +153,16 @@ def manifest_from_diff(repo: Path, args: argparse.Namespace) -> tuple[list[dict[
     errors: list[dict[str, Any]] = []
     if args.mode in ("pr", "range"):
         name_command = ("git", "diff", "--name-status", "-z", args.base, args.head)
-        num_command = ("git", "diff", "--numstat", args.base, args.head)
+        num_command = ("git", "diff", "--numstat", args.base, args.head, "-z")
     elif args.mode == "staged":
         name_command = ("git", "diff", "--cached", "--name-status", "-z")
-        num_command = ("git", "diff", "--cached", "--numstat")
+        num_command = ("git", "diff", "--cached", "--numstat", "-z")
     elif args.mode == "all-local":
         name_command = ("git", "diff", "HEAD", "--name-status", "-z")
-        num_command = ("git", "diff", "HEAD", "--numstat")
+        num_command = ("git", "diff", "HEAD", "--numstat", "-z")
     else:
         name_command = ("git", "diff", "--name-status", "-z")
-        num_command = ("git", "diff", "--numstat")
+        num_command = ("git", "diff", "--numstat", "-z")
 
     names = run(repo, *name_command)
     numbers = run(repo, *num_command)
@@ -176,10 +189,10 @@ def manifest_from_diff(repo: Path, args: argparse.Namespace) -> tuple[list[dict[
         known.add(path)
 
     if args.mode in ("unstaged", "all-local"):
-        untracked = run(repo, "git", "ls-files", "--others", "--exclude-standard")
+        untracked = run(repo, "git", "ls-files", "--others", "--exclude-standard", "-z")
         if untracked["status"] != "ok":
             errors.append(untracked)
-        for path in lines(untracked):
+        for path in (item for item in output(untracked).split("\0") if item):
             if path in known:
                 continue
             added, deleted = untracked_stats(repo, path)
@@ -215,8 +228,14 @@ def directory_manifest(repo: Path, directory: str) -> tuple[list[dict[str, Any]]
     return manifest, []
 
 
+# Agent worktrees and dependency trees hold copies of the repository; counting
+# them would duplicate tests, standards, and targets.
+EXCLUDED_GLOBS = ("!.git/**", "!.claude/worktrees/**", "!.worktrees/**", "!.t3/**", "!node_modules/**", "!**/node_modules/**")
+
+
 def discover_files(repo: Path) -> tuple[list[str], list[dict[str, Any]]]:
-    result = run(repo, "rg", "--files", "--hidden", "--glob", "!.git/**")
+    globs = [arg for glob in EXCLUDED_GLOBS for arg in ("--glob", glob)]
+    result = run(repo, "rg", "--files", "--hidden", *globs)
     if result["status"] != "ok":
         return [], [result]
     return sorted(lines(result)), []
@@ -278,7 +297,11 @@ def package_metadata(repo: Path, all_files: list[str]) -> dict[str, Any]:
                 scripts.append({"manifest": path, "name": str(name), "command": command})
     for path in all_files:
         if Path(path).name in {"Makefile", "justfile"}:
-            scripts.append({"manifest": path, "name": "native-file", "command": "see manifest"})
+            targets = native_targets(repo / path)
+            if not targets:
+                scripts.append({"manifest": path, "name": "native-file", "command": "see manifest"})
+            for target in targets:
+                scripts.append({"manifest": path, "name": target, "command": f"{'make' if Path(path).name == 'Makefile' else 'just'} {target}"})
     workflows = [
         path for path in all_files
         if path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml"))
@@ -308,6 +331,248 @@ def package_metadata(repo: Path, all_files: list[str]) -> dict[str, Any]:
     }
 
 
+MAKE_TARGET = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)\s*:(?!=)")
+JUST_RECIPE = re.compile(r"^@?([A-Za-z0-9][A-Za-z0-9_-]*)(?:\s+[^:=]*)?:(?!=)")
+
+
+def native_targets(path: Path, limit: int = 40) -> list[str]:
+    """Return declared Makefile targets or justfile recipes without executing them."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+    pattern = MAKE_TARGET if path.name == "Makefile" else JUST_RECIPE
+    targets: list[str] = []
+    for line in text.splitlines():
+        match = pattern.match(line)
+        if match and not match.group(1).startswith(".") and match.group(1) not in targets:
+            targets.append(match.group(1))
+    return targets[:limit]
+
+
+HARNESS_PATTERNS: dict[str, tuple[str, ...]] = {
+    "browser_e2e": ("playwright.config.", "cypress.config.", "cypress.json", "wdio.conf."),
+    "mobile_e2e": (".maestro/", "integration_test/", "detox.config.", ".detoxrc"),
+    "containers": ("docker-compose", "compose.yml", "compose.yaml", "devcontainer.json"),
+    "http_requests": (".http", ".rest", ".bru"),
+    "load_or_stress": ("k6", "locust", "artillery", "vegeta", "/bench", "_bench", "benchmark"),
+    "property_or_fuzz": ("hypothesis", "fast-check", "proptest", "quickcheck", "fuzz"),
+}
+TEST_FILE = re.compile(
+    r"(^|/)(test_[^/]+\.py|[^/]+_test\.(py|go|dart|exs|rb)|[^/]+\.(test|spec)\.[cm]?[jt]sx?|[^/]+(Test|Tests|Spec)\.(java|kt|swift|cs|php))$"
+)
+
+
+CODE_SUFFIXES = (
+    ".py", ".go", ".rs", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".dart", ".java", ".kt",
+    ".swift", ".cs", ".php", ".rb", ".ex", ".exs", ".scala", ".c", ".cc", ".cpp", ".h", ".vue", ".svelte",
+)
+
+
+def is_test_path(path: str) -> bool:
+    lower = path.lower()
+    return bool(TEST_FILE.search(path)) or any(part in lower for part in ("/__tests__/", "/tests/", "/test/", "/spec/"))
+
+
+def source_stem(path: str) -> str:
+    name = Path(path).name.lower()
+    for suffix in (".test", ".spec", "_test", "test_", "tests", "test", "spec"):
+        name = name.replace(suffix, "")
+    return name.split(".", 1)[0].strip("_-.")
+
+
+def verification_assets(all_files: list[str], manifest: list[dict[str, Any]]) -> dict[str, Any]:
+    """Describe how the repository can be driven and proven, from file names only."""
+    verify_skills = sorted(
+        path for path in all_files
+        if re.search(r"(^|/)\.(agents|claude|cursor)/skills/verify-[^/]+/SKILL\.md$", path)
+    )
+    harnesses: dict[str, list[str]] = {name: [] for name in HARNESS_PATTERNS}
+    for path in all_files:
+        lower = path.lower()
+        for name, patterns in HARNESS_PATTERNS.items():
+            if any(pattern in lower for pattern in patterns) and len(harnesses[name]) < 20:
+                harnesses[name].append(path)
+    tests = [path for path in all_files if is_test_path(path) and path.lower().endswith(CODE_SUFFIXES)]
+    by_stem: dict[str, list[str]] = {}
+    for path in tests:
+        stem = source_stem(path)
+        if stem:
+            by_stem.setdefault(stem, []).append(path)
+    related: dict[str, list[str]] = {}
+    for entry in manifest:
+        path = entry["path"]
+        if entry["class"] != "source" or is_test_path(path) or not path.lower().endswith(CODE_SUFFIXES):
+            continue
+        stem = source_stem(path)
+        candidates = by_stem.get(stem, []) if len(stem) >= 3 else []
+        parent = str(Path(path).parent)
+        ranked = sorted(candidates, key=lambda test: (not test.startswith(parent), test))
+        related[path] = ranked[:8]
+    return {
+        "verify_skills": verify_skills,
+        "harnesses": {name: sorted(paths) for name, paths in harnesses.items() if paths},
+        "test_file_count": len(tests),
+        "related_tests": related,
+        "changed_sources_without_related_tests": sorted(path for path, found in related.items() if not found),
+    }
+
+
+DEFINITION_PATTERNS = (
+    re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)"),                       # Python
+    re.compile(r"^\s*class\s+([A-Za-z_]\w*)"),                                  # Python, JS/TS, Dart, Java, Kotlin
+    re.compile(r"^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)"),                  # Go
+    re.compile(r"^\s*type\s+([A-Za-z_]\w*)\s+(?:struct|interface)"),            # Go
+    re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\*?\s+([A-Za-z_$][\w$]*)"),  # JS/TS
+    re.compile(r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*[:=]"),               # JS/TS
+    re.compile(r"^\s*(?:export\s+)?(?:interface|type|enum)\s+([A-Za-z_$][\w$]*)"),                # TS
+    re.compile(r"^\s*(?:pub\s+)?fn\s+([A-Za-z_]\w*)"),                          # Rust
+    re.compile(r"^\s*(?:override\s+|suspend\s+)*fun\s+([A-Za-z_]\w*)"),         # Kotlin
+)
+HUNK_CONTEXT = re.compile(r"^@@ [^@]+ @@\s*(.*)$")
+QUOTED_KEY = re.compile(r"""["'`]([A-Za-z_][A-Za-z0-9_.-]{2,39})["'`]""")
+COMMON_WORDS = {
+    "true", "false", "null", "none", "self", "this", "string", "number", "error", "data", "value", "name",
+    "type", "id", "get", "set", "new", "utf-8", "json", "text", "default", "index", "item", "items", "result",
+}
+USAGE_SUFFIXES = CODE_SUFFIXES + (".html", ".graphql", ".gql", ".proto", ".sql")
+IMPACT_SYMBOL_LIMIT = 40
+IMPACT_FILE_LIMIT = 30
+TOO_COMMON = 150
+
+
+def definition_names(line: str) -> list[str]:
+    for pattern in DEFINITION_PATTERNS:
+        match = pattern.match(line)
+        if match:
+            return [match.group(1)]
+    return []
+
+
+def diff_command(args: argparse.Namespace, paths: list[str]) -> tuple[str, ...]:
+    if args.mode in ("pr", "range"):
+        return ("git", "diff", "--no-ext-diff", "--no-color", "-U0", args.base, args.head, "--", *paths)
+    if args.mode == "staged":
+        return ("git", "diff", "--no-ext-diff", "--no-color", "--cached", "-U0", "--", *paths)
+    if args.mode == "all-local":
+        return ("git", "diff", "--no-ext-diff", "--no-color", "HEAD", "-U0", "--", *paths)
+    return ("git", "diff", "--no-ext-diff", "--no-color", "-U0", "--", *paths)
+
+
+def changed_symbols(repo: Path, args: argparse.Namespace, manifest: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Names defined, enclosing, or quoted on changed lines: the seeds of the Impact Set."""
+    sources = [
+        e for e in manifest
+        if e["class"] in {"source", "renamed", "deleted"} and e["path"].lower().endswith(CODE_SUFFIXES) and not is_test_path(e["path"])
+    ]
+    symbols: dict[str, dict[str, Any]] = {}
+
+    def add(name: str, kind: str, path: str) -> None:
+        if len(name) < 3 or name.lower() in COMMON_WORDS:
+            return
+        entry = symbols.setdefault(name, {"symbol": name, "kinds": set(), "changed_in": set()})
+        entry["kinds"].add(kind)
+        entry["changed_in"].add(path)
+
+    errors: list[dict[str, Any]] = []
+    tracked = [e["path"] for e in sources if e["status"] != "??"]
+    if tracked and args.mode != "dir":
+        result = run(repo, *diff_command(args, tracked), timeout=60)
+        if result["status"] != "ok":
+            errors.append({**result, "stdout": ""})
+        current = None
+        for line in output(result).splitlines():
+            if line.startswith("+++ "):
+                current = line[6:] if line.startswith("+++ b/") else current
+            elif line.startswith("--- a/") and current is None:
+                current = line[6:]
+            elif line.startswith("diff --git"):
+                current = None
+            elif line.startswith("@@"):
+                match = HUNK_CONTEXT.match(line)
+                for name in definition_names(match.group(1)) if match else []:
+                    add(name, "enclosing", current or "?")
+            elif line[:1] in {"+", "-"} and not line.startswith(("+++", "---")):
+                body = line[1:]
+                for name in definition_names(body):
+                    add(name, "definition", current or "?")
+                for key in QUOTED_KEY.findall(body):
+                    add(key, "key", current or "?")
+    for entry in sources:
+        if entry["status"] != "??":
+            continue
+        try:
+            text = (repo / entry["path"]).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            for name in definition_names(line):
+                add(name, "definition", entry["path"])
+    return symbols, errors
+
+
+def impact_candidates(repo: Path, args: argparse.Namespace, manifest: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Where each changed symbol or data key is used: the deterministic start of the Impact Set."""
+    symbols, errors = changed_symbols(repo, args, manifest)
+    ranked = sorted(
+        symbols.values(),
+        key=lambda item: ("definition" not in item["kinds"] and "enclosing" not in item["kinds"], item["symbol"]),
+    )
+    globs = [arg for glob in EXCLUDED_GLOBS for arg in ("--glob", glob)]
+    changed_paths = {e["path"] for e in manifest}
+    results = []
+    for item in ranked[:IMPACT_SYMBOL_LIMIT]:
+        found = run(repo, "rg", "-l", "-w", "-F", "--hidden", *globs, "--", item["symbol"], ".", timeout=30)
+        files = sorted(path.removeprefix("./") for path in lines(found)) if found["code"] in (0, 1) else []
+        if found["code"] not in (0, 1):
+            errors.append({**found, "stdout": ""})
+        outside = [path for path in files if path not in changed_paths and path.lower().endswith(USAGE_SUFFIXES)]
+        results.append({
+            "symbol": item["symbol"],
+            "kinds": sorted(item["kinds"]),
+            "changed_in": sorted(item["changed_in"]),
+            "usage_count": len(outside),
+            "usage_files": outside[:IMPACT_FILE_LIMIT],
+            "tests_among_usages": [path for path in outside if is_test_path(path)][:IMPACT_FILE_LIMIT],
+            "too_common": len(outside) > TOO_COMMON,
+        })
+    return {
+        "symbols": results,
+        "truncated": len(ranked) > IMPACT_SYMBOL_LIMIT,
+        "note": "text matches: confirm each usage by tracing; name collisions are dismissed with a reason",
+    }, errors
+
+
+FIX_SUBJECT = re.compile(r"\b(fix|fixes|fixed|hotfix|bug|revert|regression|incident|rollback)\b", re.IGNORECASE)
+
+
+def change_history(repo: Path, manifest: list[dict[str, Any]], ref: str | None, limit: int = 40) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Summarize recent history of touched paths so reviewers see fragile areas."""
+    history: dict[str, Any] = {}
+    errors: list[dict[str, Any]] = []
+    for entry in manifest[:limit]:
+        if entry["class"] in {"binary", "generated", "lockfile", "vendored"}:
+            continue
+        path = entry.get("old_path") or entry["path"]
+        command = ["git", "log", "-n", "100", "--format=%h%x09%as%x09%s"]
+        if ref:
+            command.append(ref)
+        result = run(repo, *command, "--", path)
+        if result["status"] != "ok":
+            errors.append(result)
+            continue
+        rows = [line.split("\t", 2) for line in lines(result)]
+        rows = [row for row in rows if len(row) == 3]
+        fixes = [row for row in rows if FIX_SUBJECT.search(row[2])]
+        history[entry["path"]] = {
+            "commits_sampled": len(rows),
+            "fix_like_commits": len(fixes),
+            "recent": [f"{sha} {date} {subject}" for sha, date, subject in rows[:5]],
+            "recent_fixes": [f"{sha} {date} {subject}" for sha, date, subject in fixes[:5]],
+        }
+    return history, errors
+
+
 def issue_references(repo: Path, args: argparse.Namespace) -> list[str]:
     if args.mode in ("pr", "range") and args.base and args.head:
         result = run(repo, "git", "log", "--format=%B", f"{args.base}..{args.head}")
@@ -322,12 +587,20 @@ SIGNAL_PATTERNS: dict[str, tuple[str, ...]] = {
     "persistence_data": ("schema", "migration", "database", "db", "model", "repository", "transaction", "queue", "retry", "cache", "billing", "counter"),
     "contracts": ("api", "dto", "schema", "event", "webhook", "sdk", "client", "serializer", "route", "graphql", "openapi"),
     "edge_functions": ("function", "handler", "validator", "parser", "mapper"),
-    "ui_runtime": ("component", "frontend", "browser", "route", "form", "view", "page", "screen", "react", "vue", "svelte", ".css", ".tsx", ".jsx"),
+    "ui_runtime": ("component", "frontend", "browser", "form", "page", "screen", "react", "vue", "svelte", ".css", ".tsx", ".jsx", ".vue", ".svelte", ".dart"),
     "structural_growth": ("refactor", "adapter", "dispatcher", "state", "workflow", "handler", "service", "controller"),
     "deletion_deprecation": ("deprecated", "deprecation", "remove", "delete", "cleanup", "legacy", "feature-flag"),
     "tests": ("test", "spec", "__tests__", "fixture", "snapshot"),
     "generated": ("generated", ".gen.", "dist/", "codegen"),
     "migrations": ("migration", "migrate", "schema"),
+}
+
+
+# Signals whose keywords are too common in unrelated code: content matches count
+# only in files with these suffixes (an empty tuple means path matches only).
+CONTENT_SCOPED_SIGNALS: dict[str, tuple[str, ...]] = {
+    "ui_runtime": (".tsx", ".jsx", ".vue", ".svelte", ".dart", ".html", ".css", ".scss", ".ts", ".js", ".swift", ".kt"),
+    "migrations": (),
 }
 
 
@@ -350,6 +623,9 @@ def signal_evidence(repo: Path, manifest: list[dict[str, Any]]) -> dict[str, Any
             continue
         lower = content.lower()
         for name, patterns in SIGNAL_PATTERNS.items():
+            scoped = CONTENT_SCOPED_SIGNALS.get(name)
+            if scoped is not None and not path.lower().endswith(scoped):
+                continue
             if any(re.search(r"(?<![a-z0-9_])" + re.escape(pattern) + r"(?![a-z0-9_])", lower) for pattern in patterns if pattern.isalpha()):
                 signals[name]["present"] = True
                 signals[name]["sources"].append(path)
@@ -394,7 +670,7 @@ def github_evidence(repo: Path, args: argparse.Namespace, head_sha: str | None) 
     result = run(
         repo,
         "gh", "pr", "view", str(args.pr),
-        "--json", "number,title,body,baseRefName,headRefName,baseRefOid,headRefOid,state,isDraft,mergeStateStatus,statusCheckRollup,commits",
+        "--json", "number,title,body,baseRefName,headRefName,baseRefOid,headRefOid,state,isDraft,mergeStateStatus,statusCheckRollup,commits,author,isCrossRepository,headRepositoryOwner",
     )
     if result["status"] != "ok":
         blocked.append(result)
@@ -434,6 +710,12 @@ def github_evidence(repo: Path, args: argparse.Namespace, head_sha: str | None) 
         "current_ci_available": exact_success,
         "checks": checks,
         "metadata": {key: data.get(key) for key in ("title", "mergeStateStatus")},
+        "execution_trust": {
+            "author": (data.get("author") or {}).get("login"),
+            "is_cross_repository": data.get("isCrossRepository"),
+            "head_repository_owner": (data.get("headRepositoryOwner") or {}).get("login"),
+            "same_repository": data.get("isCrossRepository") is False,
+        },
         "issue_reference_candidates": sorted(
             set(re.findall(r"(?:#[0-9]+|[A-Z][A-Z0-9]+-[0-9]+)", str(data.get("body") or ""), flags=re.IGNORECASE)),
             key=str.lower,
@@ -471,6 +753,10 @@ def main() -> int:
     local_issue_refs = issue_references(repo, args)
     signals = signal_evidence(repo, manifest)
     github, github_errors = github_evidence(repo, args, snapshot_data.get("head_sha"))
+    assets = verification_assets(all_files, manifest)
+    history_ref = snapshot_data.get("base_sha") if args.mode in ("pr", "range") else None
+    history, history_errors = change_history(repo, manifest, history_ref)
+    impact, impact_errors = impact_candidates(repo, args, manifest) if args.mode != "dir" else ({"symbols": [], "truncated": False}, [])
     blocked = snapshot_errors + manifest_errors + file_errors + github_errors
     tools = {name: shutil.which(name) for name in ("git", "gh", "rg")}
     ci = {
@@ -504,6 +790,9 @@ def main() -> int:
         "ci": ci,
         "github": github,
         "signals": signals,
+        "verification_assets": assets,
+        "change_history": history,
+        "impact_candidates": impact,
         "evidence": {
             "availability": {
                 "git": tools["git"] is not None,
@@ -511,6 +800,8 @@ def main() -> int:
                 "gh": tools["gh"] is not None if args.mode == "pr" else None,
             },
             "blocked_commands": blocked,
+            "history_blocked_commands": history_errors,
+            "impact_blocked_commands": impact_errors,
             "complete": not blocked,
         },
         "pr_state": {

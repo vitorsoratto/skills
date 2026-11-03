@@ -1,3 +1,8 @@
+> **Superseded 2026-11-03.** Trident v3 replaced the Scanner/Lens/Verifier/Arbiter
+> chain with Context -> Prove -> Replay. Current behavior lives in `SKILL.md`,
+> `references/proof-protocol.md`, and `references/system-map.md`; the reasons are in
+> `references/evidence-basis.md`. This file is kept as history of the v2 migration.
+
 # Trident Reliability Implementation Plan
 
 ## Objective

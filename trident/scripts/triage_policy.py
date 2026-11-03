@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a deterministic Trident Risk Map and Review Plan from Triage Evidence."""
+"""Build a deterministic Trident Risk Map and Review Plan, including required Behavior Proofs."""
 
 from __future__ import annotations
 
@@ -15,6 +15,41 @@ CAPABILITY_RULES = {
     "contracts": ("contract-integration", "producer-consumer-contract", "focused-integration"),
     "ui_runtime": ("ui-runtime", "focused-ui", "ui-state-matrix"),
     "edge_functions": ("edge-functions", "essential-path", "boundary-path"),
+}
+
+# Behavior Proofs each risk signal demands. A proof is executed evidence, not a
+# reviewer opinion: it runs the real code and records what happened.
+PROOF_RULES: dict[str, tuple[tuple[str, str], ...]] = {
+    "auth_trust": (
+        ("authz-negative-matrix", "every changed boundary rejects the wrong identity, tenant, and role, and accepts the right one"),
+        ("hostile-input", "hostile inputs for the changed trust boundary (injection, traversal, oversized, malformed) fail closed"),
+    ),
+    "persistence_data": (
+        ("persistence-readback", "a write through the changed path reads back correctly through a second, independent path"),
+        ("retry-idempotency", "replaying or redelivering the same operation leaves exactly one effect"),
+        ("concurrency-invariant", "concurrent executions of the changed operation keep the data invariant"),
+    ),
+    "migrations": (
+        ("migration-forward-rollback", "the migration applies to a disposable copy with representative data and rolls back or is proven forward-only"),
+    ),
+    "contracts": (
+        ("producer-consumer-roundtrip", "the real producer output is accepted by the real consumer parser, including errors and empty pages"),
+        ("compat-previous-shape", "payloads and callers that existed before the change still work"),
+    ),
+    "ui_runtime": (
+        ("drive-changed-flow", "the changed screen or flow is driven in the running app through its user entry point"),
+        ("ui-state-matrix", "loading, empty, error, and permission states render and recover"),
+    ),
+    "edge_functions": (
+        ("boundary-properties", "boundary and property inputs for each changed function (empty, limits, ordering, unicode/time, failure) behave as specified"),
+    ),
+}
+
+STRESS_PROFILES = {
+    "low": [],
+    "medium": ["boundary"],
+    "high": ["boundary", "repetition", "concurrency"],
+    "critical": ["boundary", "repetition", "concurrency", "failure-injection", "volume"],
 }
 
 
@@ -101,13 +136,14 @@ def build_plan(evidence: dict[str, Any], requested_depth: str | None = None) -> 
     }
     if not any(item.get("class") == "source" for item in evidence.get("coverage_manifest", [])):
         checks.append({"check_id": "content-coverage", "required": False, "disposition": "not_applicable", "target": "non-source coverage classes"})
-    topology = ["shared-scanner", "shared-verifier"]
+    proofs = build_proofs(evidence, signals, risk)
+    topology = ["context-map", "prover", "replay"]
     if budget != "baseline":
-        topology.append("specialist-lanes")
-    if requested == "deep" or critical_signals or risk["structural"] == "high":
-        topology.append("conditional-arbiter")
+        topology.append("parallel-provers")
+    if requested == "deep" or critical_signals:
+        topology.append("base-differential")
     return {
-        "schema_version": "trident-plan-v1",
+        "schema_version": "trident-plan-v2",
         "snapshot": evidence.get("snapshot", {}),
         "risk_map": risk,
         "active_capabilities": sorted(active),
@@ -116,11 +152,51 @@ def build_plan(evidence: dict[str, Any], requested_depth: str | None = None) -> 
         "agent_ceiling": {"baseline": 2, "escalated": 4, "deep": 6}[budget],
         "topology": topology,
         "required_checks": checks,
+        "required_proofs": proofs,
+        "stress_profile": STRESS_PROFILES[risk["correctness"]],
+        "system_map": {"required": True, "refresh": "sections touched by the manifest or stale since their verified commit"},
         "thermo_gate": {"active": thermo, "reason": "structural signals" if thermo else "not triggered"},
         "spec_gate": {"active": spec_enabled, "reason": "valid candidate source" if spec_enabled else "spec_absent"},
         "removal_gate": {"active": removal, "reason": "deletion/deprecation signal" if removal else "not triggered"},
-        "arbiter_conditions": ["P0/P1", "dispute", "insufficient evidence", "contradictory required evidence"],
+        "blocking_proof_rule": "a blocking correctness result needs an executed or reproduced proof confirmed by replay, or a traced proof with a recorded execution blocker",
     }
+
+
+def build_proofs(evidence: dict[str, Any], signals: set[str], risk: dict[str, str]) -> list[dict[str, Any]]:
+    """Materialize the minimum Behavior Proofs; the model may add, never remove."""
+    has_source = any(entry.get("class") == "source" for entry in evidence.get("coverage_manifest", []))
+    correctness = risk["correctness"]
+    proofs: list[dict[str, Any]] = []
+    if has_source:
+        proofs.append({
+            "proof_id": "affected-flow-e2e",
+            "goal": "each flow in the Impact Set (one representative per equivalence class) is driven from its real entry point and produces the intended observable result",
+            "approval_critical": correctness in {"medium", "high", "critical"},
+            "disposition": "not_checked",
+        })
+        proofs.append({
+            "proof_id": "existing-tests-at-head",
+            "goal": "the repository's related tests for changed code pass at the reviewed head",
+            "approval_critical": True,
+            "disposition": "not_checked",
+        })
+    critical_capabilities = {"auth_trust", "persistence_data", "migrations"}
+    for signal in sorted(signals):
+        for proof_id, goal in PROOF_RULES.get(signal, ()):
+            proofs.append({
+                "proof_id": proof_id,
+                "goal": goal,
+                "signal": signal,
+                "approval_critical": signal in critical_capabilities or correctness == "critical",
+                "disposition": "not_checked",
+            })
+    seen: set[str] = set()
+    unique = []
+    for proof in proofs:
+        if proof["proof_id"] not in seen:
+            seen.add(proof["proof_id"])
+            unique.append(proof)
+    return unique
 
 
 def main() -> int:

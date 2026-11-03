@@ -62,6 +62,41 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(entries["src/main.py"]["additions"], 2)
         self.assertEqual(result["schema_version"], "trident-triage-v2")
 
+    def test_non_ascii_paths_are_literal_and_keep_line_counts(self) -> None:
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs" / "sessão.md").write_text("a\nb\n", encoding="utf-8")
+        (self.repo / "src" / "ação.py").write_text("x = 1\n", encoding="utf-8")
+        self.git_run("git", "add", "src/ação.py")
+        self.git_run("git", "commit", "-qm", "add accented source")
+        (self.repo / "src" / "ação.py").write_text("x = 2\ny = 3\n", encoding="utf-8")
+        entries = {entry["path"]: entry for entry in self.collect("--mode", "all-local")["coverage_manifest"]}
+        self.assertIn("docs/sessão.md", entries)
+        self.assertEqual(entries["docs/sessão.md"]["additions"], 2)
+        self.assertEqual(entries["src/ação.py"]["additions"], 2)
+        self.assertEqual(entries["src/ação.py"]["deletions"], 1)
+        self.assertFalse(any("\\" in path or path.startswith('"') for path in entries))
+
+    def test_impact_candidates_list_every_usage_of_a_changed_symbol(self) -> None:
+        (self.repo / "src" / "masks.ts").write_text('export const phoneMask = "(99) 9999-9999";\n', encoding="utf-8")
+        (self.repo / "src" / "signup.tsx").write_text('import { phoneMask } from "./masks";\nexport const A = () => <Input name="phone" mask={phoneMask} />;\n', encoding="utf-8")
+        (self.repo / "src" / "profile.tsx").write_text('import { phoneMask } from "./masks";\nexport const B = () => <Input name="phone" mask={phoneMask} />;\n', encoding="utf-8")
+        (self.repo / "src" / "client.ts").write_text('export const send = (form) => post("/users", { phone: form.phone });\n', encoding="utf-8")
+        (self.repo / "src" / "masks.test.ts").write_text('import { phoneMask } from "./masks";\n', encoding="utf-8")
+        self.git_run("git", "add", ".")
+        self.git_run("git", "commit", "-qm", "masks")
+        (self.repo / "src" / "masks.ts").write_text('export const phoneMask = "(99) 99999-9999";\n', encoding="utf-8")
+        impact = {item["symbol"]: item for item in self.collect("--mode", "unstaged")["impact_candidates"]["symbols"]}
+        self.assertIn("phoneMask", impact)
+        self.assertEqual(impact["phoneMask"]["usage_files"], ["src/masks.test.ts", "src/profile.tsx", "src/signup.tsx"])
+        self.assertEqual(impact["phoneMask"]["tests_among_usages"], ["src/masks.test.ts"])
+
+    def test_renamed_file_keeps_line_counts(self) -> None:
+        self.git_run("git", "mv", "src/main.py", "src/renamed_main.py")
+        (self.repo / "src" / "renamed_main.py").write_text("value = 1\nother = 2\n", encoding="utf-8")
+        self.git_run("git", "add", ".")
+        entries = {entry["path"]: entry for entry in self.collect("--mode", "staged")["coverage_manifest"]}
+        self.assertEqual(entries["src/renamed_main.py"]["additions"], 1)
+
     def test_staged_and_range_cover_renames_deletions_and_special_classes(self) -> None:
         (self.repo / "src" / "main.py").rename(self.repo / "src" / "renamed.py")
         (self.repo / "src" / "old.py").write_text("old\n", encoding="utf-8")

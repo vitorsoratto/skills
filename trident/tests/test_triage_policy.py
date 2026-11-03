@@ -34,6 +34,12 @@ class TriagePolicyTests(unittest.TestCase):
         self.assertNotIn("spec-alignment", plan["active_capabilities"])
         self.assertFalse(plan["spec_gate"]["active"])
         self.assertIn("local-verification-fallback", {item["check_id"] for item in plan["required_checks"]})
+        proofs = {item["proof_id"]: item for item in plan["required_proofs"]}
+        self.assertIn("affected-flow-e2e", proofs)
+        self.assertFalse(proofs["affected-flow-e2e"]["approval_critical"])
+        self.assertTrue(proofs["existing-tests-at-head"]["approval_critical"])
+        self.assertEqual(plan["stress_profile"], [])
+        self.assertNotIn("conditional-arbiter", plan["topology"])
 
     def test_risk_signals_activate_each_required_gate(self) -> None:
         names = {name: {"present": True, "paths": ["src/change.py"], "sources": []} for name in (
@@ -49,6 +55,12 @@ class TriagePolicyTests(unittest.TestCase):
         self.assertTrue(plan["thermo_gate"]["active"])
         self.assertTrue(plan["removal_gate"]["active"])
         self.assertTrue(plan["spec_gate"]["active"])
+        proofs = {item["proof_id"]: item for item in plan["required_proofs"]}
+        for proof_id in ("authz-negative-matrix", "retry-idempotency", "concurrency-invariant", "producer-consumer-roundtrip", "drive-changed-flow", "boundary-properties"):
+            self.assertIn(proof_id, proofs)
+        self.assertTrue(proofs["retry-idempotency"]["approval_critical"])
+        self.assertTrue(proofs["affected-flow-e2e"]["approval_critical"])
+        self.assertIn("concurrency", plan["stress_profile"])
 
     def test_deep_request_has_six_agent_ceiling_and_exact_ci_disposition(self) -> None:
         plan = build_plan(evidence(mode="pr", ci=True), requested_depth="deep")

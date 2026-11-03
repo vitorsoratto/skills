@@ -1,7 +1,7 @@
 interface:
   display_name: "Trident"
-  short_description: "Risk-triaged PR review with adaptive verification and concise verdicts"
-  default_prompt: "Review the target with Trident. Start with deterministic risk triage, activate only required specialist capabilities, verify findings independently, and return a compact developer review plus a detailed remediation report when findings exist."
+  short_description: "Execution-first PR review: system context, end-to-end behavior proofs, replay-confirmed findings"
+  default_prompt: "Review the target with Trident. Run deterministic triage, refresh the System Map and Change Context Brief, prove each affected flow by running it, replay every claimed bug in fresh worktrees, and return a compact developer review plus a remediation report when confirmed findings exist."
 
 # Agent-agnostic skill - works with any LLM provider.
 # No provider-specific configuration required.

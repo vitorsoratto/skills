@@ -9,7 +9,7 @@ schema or invent another finding ID namespace.
 
 ```yaml
 schema_version: trident-result-v1
-stage: triage|scanner|edge-functions|security-trust|data-integrity|contract-integration|ui-runtime|thermo|removal-dead-code|spec-alignment|verifier|arbiter|completion|render
+stage: triage|context|prover|spec-alignment|removal-dead-code|thermo|replay|completion|render
 review_snapshot:
   mode: pr|range|unstaged|staged|all-local|dir
   base_sha: string|null
@@ -25,7 +25,28 @@ review_plan:
   active_capabilities: [string]
   budget: baseline|escalated|deep
   required_checks: [string]
+  required_proofs: [string]
+  stress_profile: [boundary|repetition|concurrency|failure-injection|volume]
   escalation_reason: string|null
+system_context:
+  map_location: string|null
+  refreshed_sections: [string]
+  change_context_brief: string|null
+  safety_facts: [{fact, proof_id, level}]
+  affected_flows: [{flow, entry_point, sink, changed_symbols: [string]}]
+  impact_set:
+    equivalence_classes: [{representative, members: [string], shared_property}]
+    dismissed_usages: [{path, symbol, reason}]
+behavior_proofs:
+  - proof_id: string
+    flow: string|null
+    goal: string
+    disposition: executed|satisfied_by_ci|not_applicable|not_checked|blocked
+    outcome: held|failed|null
+    approval_critical: true|false
+    affected_paths: [string]
+    evidence: string|null
+    reason: string|null
 coverage_manifest:
   status: complete|partial|blocked
   entries: [{path, status, class, treatment, additions, deletions}]
@@ -61,6 +82,15 @@ results:
     evidence_packet: object|null
     cross_references: [string]
     origin_stage: string
+    rule_anchor: string|null            # required for a maintainability blocker
+    proof:
+      level: asserted|anchored|traced|executed|reproduced
+      recipe: {files: [{source, dest}], setup: [string], command, cwd, timeout_seconds,
+               expect: {head: pass|fail|skip, base: pass|fail|skip, failure_signature}}
+      execution_blocked: string|null
+      observed: {head: string|null, base: string|null}
+      replay: {state: confirmed|mismatch|blocked|rejected, differential: introduced_by_change|preexisting|confirmed_head_only|behavior_holds|null}
+    proof_gate: string|null             # set by review_state.py when a blocker is downgraded
 coverage_gaps:
   - id: null|GAP-1
     area: string
@@ -76,6 +106,7 @@ review_completion:
   results_verified: true|false
   cleanup_verified: true|false
   blockers: [string]
+unproven_risks: [{kind: unproven_claim|unproven_behavior, title, severity, reason, path}]
 review_verdict: approve|request_changes|comment|no_verdict|null
 render:
   developer_review: string|null
@@ -102,7 +133,7 @@ The axes are independent and are never reranked against one another:
 correctness bug merely because it blocks approval. A Removal result is a
 decision about reachability, not a claim that code is dead.
 
-## Evidence Packet and verification
+## Evidence Packet, proof, and verification
 
 Every blocking result (`COR-P0/P1/P2`, `MNT-blocker`, or mandatory
 `SPEC-missing/wrong`) requires an `evidence_packet` containing:
@@ -110,18 +141,26 @@ Every blocking result (`COR-P0/P1/P2`, `MNT-blocker`, or mandatory
 - the claim and reachable trigger;
 - concrete user, production, data, or delivery impact;
 - source evidence with file and line anchors;
-- confidence and current snapshot evidence;
+- the `proof` with its level, recipe, and replay outcome;
 - bounded correction direction preserving repository constraints;
-- exact correction verification guidance.
+- exact correction verification guidance (normally: rerun the Proof Recipe and
+  see it flip from fail to pass).
 
-P0/P1 correctness results additionally require evidence of current source,
-normal user/job or production reachability, and both sides of an available
-cross-boundary contract. Verifier and Arbiter may reject or mark a result
-`insufficient_evidence`; those outcomes remain auditable but are not findings.
+The proof bar is defined in [proof-protocol.md](proof-protocol.md) and
+enforced by `scripts/review_state.py`:
 
-Results receive stable IDs only after same-axis/same-kind deduplication and
-independent verification. Cross-axis related results retain separate IDs and
-reference one another through `cross_references`.
+- blocking correctness needs `proof.level` `executed` or `reproduced` with
+  `proof.replay.state: confirmed`, or `traced` with `execution_blocked` and a
+  confirming replay;
+- a maintainability blocker needs a `rule_anchor`; without one it becomes
+  `major`;
+- results that miss the bar become `insufficient_evidence`, keep their audit
+  trail, and appear in `unproven_risks` instead of `results`.
+
+Replay may set `rejected` or `insufficient_evidence`; those outcomes remain
+auditable but are not findings. Results receive stable IDs only after
+same-axis/same-kind deduplication and replay. Cross-axis related results
+retain separate IDs and reference one another through `cross_references`.
 
 ## Completion, verdict, and placement
 
@@ -132,10 +171,12 @@ always produce `no_verdict`. A moving PR head may be refreshed twice; further
 movement produces `review_superseded`.
 
 The Approval Gate requires `complete`, current source, no blocking correctness
-result, no maintainability blocker, no mandatory missing/wrong requirement,
-and no critical check with `blocked` or `not_checked` disposition. Only then
-may the verdict be `approve`; blocking verified results yield
-`request_changes`, and complete non-blocking results yield `comment`.
+result, no maintainability blocker, no mandatory missing/wrong requirement, no
+required check with `blocked` or `not_checked` disposition, no failed Behavior
+Proof, and no Unproven risk (an unproven severe claim or an approval-critical
+Behavior Proof that is `blocked` or `not_checked`). Only then may the verdict be
+`approve`; blocking verified results yield `request_changes`, and complete
+reviews with only non-blocking results or Unproven risks yield `comment`.
 
 Use `inline` only for a precise useful changed-line anchor. Architecture,
 cross-file, deleted-line, requirement, coverage, and review-state results use
@@ -143,12 +184,14 @@ cross-file, deleted-line, requirement, coverage, and review-state results use
 
 ## Rendering
 
-The Developer Review contains the verdict/current head, blockers, and check
+The Developer Review contains the verdict/current head, blockers with their
+proof line, Unproven risks, the Behavior Proofs that ran, and the check
 summary. P3, advisories, coverage gaps, and supporting evidence belong under a
 collapsed `<details>` section. When at least one verified result exists, also
 render one Remediation Markdown report using the same stable IDs. The report
 must include anchors, current/expected behavior, impact, constraints, bounded
-fix direction, exact discovered checks, dependencies, and the full Evidence
-Packet, without private chain-of-thought. Do not emit a parallel JSON report
+fix direction, the Proof Recipe, exact discovered checks, dependencies, and the
+full Evidence Packet, without private chain-of-thought. Render both views with
+`python3 scripts/review_state.py finalize --input envelope.json`. Do not emit a parallel JSON report
 or write into the reviewed repository unless the Artifact Persistence Gate is
 explicitly opened with a destination.

@@ -6,7 +6,7 @@ Custom agent skills for Claude Code.
 
 ### trident
 
-Three-pronged code review pipeline that combines broad scanning, independent verification, and evidence-based judgment.
+Execution-first code review: builds a persistent map of how the system works, proves affected flows end to end with stress cases, and reports only bugs a replayed run confirms.
 
 ```bash
 npx skills add vitorsoratto/skills --skill trident

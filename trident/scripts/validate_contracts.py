@@ -21,9 +21,8 @@ def main() -> int:
     failures: list[str] = []
     output = OUTPUT.read_text(encoding="utf-8")
     required_stages = (
-        "triage", "scanner", "edge-functions", "security-trust", "data-integrity",
-        "contract-integration", "ui-runtime", "thermo", "removal-dead-code",
-        "spec-alignment", "verifier", "arbiter", "completion", "render",
+        "triage", "context", "prover", "spec-alignment", "removal-dead-code",
+        "thermo", "replay", "completion", "render",
     )
     if "schema_version: trident-result-v1" not in output:
         fail("canonical result schema is missing", failures)
@@ -39,10 +38,8 @@ def main() -> int:
 
     declared: dict[str, set[str]] = {}
     required_prompts = {
-        "scanner-prompt.md", "edge-functions-prompt.md", "security-trust-prompt.md",
-        "data-integrity-prompt.md", "contract-integration-prompt.md", "ui-runtime-prompt.md",
-        "removal-dead-code-prompt.md", "spec-alignment-prompt.md", "verifier-prompt.md",
-        "arbiter-prompt.md",
+        "context-prompt.md", "prover-prompt.md", "replay-prompt.md",
+        "removal-dead-code-prompt.md", "spec-alignment-prompt.md",
     }
     found_prompts = {path.name for path in PROMPTS.glob("*-prompt.md")}
     for missing in sorted(required_prompts - found_prompts):
@@ -62,11 +59,22 @@ def main() -> int:
         declared[path.name] = names
 
     skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
-    for reference in ("output-contract.md", "review-contract.md", "triage-rules.md", "module-playbook.md"):
+    for proof_field in ("proof:", "behavior_proofs:", "system_context:", "unproven_risks:"):
+        if proof_field not in output:
+            fail(f"proof field missing from canonical contract: {proof_field}", failures)
+    for reference in (
+        "output-contract.md", "review-contract.md", "triage-rules.md", "proof-protocol.md",
+        "system-map.md", "risk-questions.md", "evidence-basis.md",
+    ):
         if reference not in skill or not (ROOT / "references" / reference).exists():
             fail(f"unresolved skill reference: {reference}", failures)
-    if not (ROOT / "scripts" / "triage_policy.py").exists() or not (ROOT / "scripts" / "review_state.py").exists():
-        fail("deterministic triage/state helpers are missing", failures)
+    for helper in ("collect_triage.py", "triage_policy.py", "review_state.py", "system_map.py", "replay_proofs.py"):
+        if not (ROOT / "scripts" / helper).exists():
+            fail(f"deterministic helper missing: {helper}", failures)
+    for path in sorted(ROOT.rglob("*.md")):
+        for target in re.findall(r"\]\(([^)#]+\.md)\)", path.read_text(encoding="utf-8")):
+            if not (path.parent / target).resolve().exists():
+                fail(f"broken link in {path.relative_to(ROOT)}: {target}", failures)
 
     if failures:
         for failure in failures:

@@ -1,6 +1,6 @@
 ---
 name: trident
-description: Review GitHub pull requests and git changes by proving behavior: builds a persistent map of how the system works, runs the affected flows end to end with stress cases, and reports only bugs a replayed run confirms. Use for PR review, local diff review, range review, directory audit, or a bounded review-and-fix-until-clean campaign.
+description: "Review GitHub pull requests and git changes by proving behavior. Builds a persistent map of how the system works, runs the affected flows end to end with stress cases, and reports only bugs a replayed run confirms. Use for PR review, local diff review, range review, directory audit, or a bounded review-and-fix-until-clean campaign."
 ---
 
 # Trident

@@ -59,6 +59,12 @@ def main() -> int:
         declared[path.name] = names
 
     skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    frontmatter = skill.split("---", 2)[1] if skill.startswith("---") else ""
+    for line in frontmatter.strip().splitlines():
+        key, _, value = line.partition(":")
+        value = value.strip()
+        if value and not value.startswith(('"', "'")) and ": " in value:
+            fail(f"SKILL.md frontmatter `{key}` has an unquoted ': ' that strict YAML parsers reject", failures)
     for proof_field in ("proof:", "behavior_proofs:", "system_context:", "unproven_risks:"):
         if proof_field not in output:
             fail(f"proof field missing from canonical contract: {proof_field}", failures)

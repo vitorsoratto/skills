@@ -77,18 +77,84 @@ class ReviewStateTests(unittest.TestCase):
         self.assertIn("Unproven risks", result["render"]["developer_review"])
         self.assertIsNone(result["render"]["remediation_markdown"])
 
-    def test_run_proof_without_replay_is_not_blocking(self) -> None:
+    def test_run_proof_without_replay_is_an_unproven_risk(self) -> None:
+        state = base_envelope()
+        proof = proven()
+        proof.pop("replay")
+        state["results"] = [p2_result(proof=proof)]
+        result = finalize(state)
+        self.assertEqual(result["review_verdict"], "comment")
+        self.assertEqual(result["results"][0]["status"], "insufficient_evidence")
+
+    def test_replay_mismatch_rejects_the_claim_at_any_severity(self) -> None:
         state = base_envelope()
         proof = proven()
         proof["replay"] = {"state": "mismatch"}
-        state["results"] = [p2_result(proof=proof)]
-        self.assertEqual(derive_verdict(state)["review_verdict"], "comment")
+        state["results"] = [p2_result(classification="P1", proof=proof)]
+        result = finalize(state)
+        self.assertEqual(result["results"][0]["status"], "rejected")
+        self.assertEqual(result["review_verdict"], "approve")
+        self.assertEqual(result["unproven_risks"], [])
 
     def test_traced_proof_blocks_only_with_execution_blocker_and_replay(self) -> None:
         state = base_envelope()
-        traced = {"level": "traced", "execution_blocked": "needs production identity provider", "replay": {"state": "confirmed"}}
+        traced = {"level": "traced", "execution_blocked": "requires_credentials: production identity provider", "replay": {"state": "confirmed"}}
         state["results"] = [p2_result(classification="P1", proof=traced)]
         self.assertEqual(derive_verdict(state)["review_verdict"], "request_changes")
+
+    def test_traced_proof_with_free_text_blocker_is_unproven(self) -> None:
+        state = base_envelope()
+        traced = {"level": "traced", "execution_blocked": "ran out of time", "replay": {"state": "confirmed"}}
+        state["results"] = [p2_result(classification="P1", proof=traced)]
+        result = finalize(state)
+        self.assertEqual(result["review_verdict"], "comment")
+        self.assertEqual(result["results"][0]["status"], "insufficient_evidence")
+
+    def test_unrun_or_mismatched_correctness_results_are_dropped_at_any_severity(self) -> None:
+        state = base_envelope()
+        mismatched = proven()
+        mismatched["replay"] = {"state": "mismatch"}
+        state["results"] = [p2_result(classification="P3", proof={"level": "anchored"}), p2_result(classification="P3", proof=mismatched)]
+        result = finalize(state)
+        self.assertEqual([item["status"] for item in result["results"]], ["rejected", "rejected"])
+        self.assertEqual(result["review_verdict"], "approve")
+        self.assertNotIn("COR-", result["render"]["developer_review"])
+
+    def test_executed_proof_without_evidence_blocks_completion(self) -> None:
+        state = base_envelope()
+        state["behavior_proofs"] = [{"proof_id": "affected-flow-e2e", "approval_critical": True, "disposition": "executed", "outcome": "held"}]
+        result = finalize(state)
+        self.assertEqual(result["review_verdict"], "no_verdict")
+        self.assertTrue(any("without evidence" in b for b in result["review_completion"]["blockers"]))
+
+    def test_mandatory_proof_cannot_be_not_applicable_and_blocked_needs_reason(self) -> None:
+        state = base_envelope()
+        state["behavior_proofs"] = [
+            {"proof_id": "existing-tests-at-head", "approval_critical": True, "disposition": "not_applicable", "reason": "no tests here"},
+            {"proof_id": "stress-boundary", "approval_critical": False, "disposition": "blocked"},
+        ]
+        result = finalize(state)
+        self.assertEqual(result["review_verdict"], "no_verdict")
+        blockers = " ".join(result["review_completion"]["blockers"])
+        self.assertIn("existing-tests-at-head", blockers)
+        self.assertIn("stress-boundary", blockers)
+
+    def test_failed_behavior_proof_without_result_has_no_verdict(self) -> None:
+        state = base_envelope()
+        state["behavior_proofs"] = [{"proof_id": "affected-flow-e2e", "approval_critical": True, "disposition": "executed", "outcome": "failed", "evidence": "go test -> FAIL"}]
+        self.assertEqual(finalize(state)["review_verdict"], "no_verdict")
+        state["results"] = [p2_result(behavior_proof_id="affected-flow-e2e")]
+        self.assertEqual(finalize(state)["review_verdict"], "request_changes")
+
+    def test_maintainability_without_rule_or_evidence_is_dropped(self) -> None:
+        state = base_envelope()
+        state["results"] = [{
+            "axis": "maintainability", "kind": "maintainability_concern", "classification": "advisory",
+            "status": "verified", "title": "Could be split", "location": {"path": "src/a.py"},
+        }]
+        result = finalize(state)
+        self.assertEqual(result["results"][0]["status"], "rejected")
+        self.assertEqual(result["review_verdict"], "approve")
 
     def test_maintainability_blocker_needs_a_documented_rule(self) -> None:
         state = base_envelope()
@@ -96,6 +162,7 @@ class ReviewStateTests(unittest.TestCase):
             "axis": "maintainability", "kind": "maintainability_concern", "classification": "blocker",
             "status": "verified", "title": "Bypasses repository layer", "location": {"path": "src/a.py"},
             "trigger": "handler queries the database directly", "claim": "use the repository",
+            "evidence": [{"path": "src/a.py", "line": 9, "fact": "raw SQL in handler duplicates repo.Users()"}],
         }]
         result = finalize(state)
         self.assertEqual(result["results"][0]["classification"], "major")
@@ -107,12 +174,12 @@ class ReviewStateTests(unittest.TestCase):
         state = base_envelope()
         state["behavior_proofs"] = [
             {"proof_id": "affected-flow-e2e", "approval_critical": True, "disposition": "blocked", "reason": "no local database"},
-            {"proof_id": "boundary-properties", "approval_critical": False, "disposition": "executed", "outcome": "held"},
+            {"proof_id": "boundary-properties", "approval_critical": False, "disposition": "executed", "outcome": "held", "evidence": "go test ./pkg -run TestBoundary -> ok"},
         ]
         result = finalize(state)
         self.assertEqual(result["review_verdict"], "comment")
         self.assertIn("no local database", result["render"]["developer_review"])
-        state["behavior_proofs"][0].update({"disposition": "executed", "outcome": "held"})
+        state["behavior_proofs"][0].update({"disposition": "executed", "outcome": "held", "evidence": "docker compose up db && go test ./api -run TestSearchE2E -> ok"})
         self.assertEqual(finalize(state)["review_verdict"], "approve")
 
     def test_refresh_supersedes_after_third_head_move(self) -> None:

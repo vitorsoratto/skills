@@ -33,10 +33,12 @@ system_context:
   refreshed_sections: [string]
   change_context_brief: string|null
   safety_facts: [{fact, proof_id, level}]
-  affected_flows: [{flow, entry_point, sink, changed_symbols: [string]}]
+  affected_flows: [{flow, entry_point, sink, changed_symbols: [string], paths: [string],
+                    exercise: string|null, cannot_run_reason: string|null}]
   impact_set:
     equivalence_classes: [{representative, members: [string], shared_property}]
     dismissed_usages: [{path, symbol, reason}]
+    shared_units: [{symbol, strategy}]     # too-common symbols and how their contract is proven
 behavior_proofs:
   - proof_id: string
     flow: string|null
@@ -83,11 +85,12 @@ results:
     cross_references: [string]
     origin_stage: string
     rule_anchor: string|null            # required for a maintainability blocker
+    behavior_proof_id: string|null      # required when the result comes from a failed Behavior Proof
     proof:
       level: asserted|anchored|traced|executed|reproduced
       recipe: {files: [{source, dest}], setup: [string], command, cwd, timeout_seconds,
                expect: {head: pass|fail|skip, base: pass|fail|skip, failure_signature}}
-      execution_blocked: string|null
+      execution_blocked: string|null    # one of the allowed blockers in proof-protocol.md
       observed: {head: string|null, base: string|null}
       replay: {state: confirmed|mismatch|blocked|rejected, differential: introduced_by_change|preexisting|confirmed_head_only|behavior_holds|null}
     proof_gate: string|null             # set by review_state.py when a blocker is downgraded
@@ -116,6 +119,9 @@ render:
 Fields may be `null` before their owning stage runs. A final envelope must
 populate every field that is relevant to its Review Plan and must preserve
 blocked or insufficient evidence instead of converting it into a finding.
+`scripts/stage_gate.py` checks the artifacts between stages (`context`,
+`plan`, `prove`, `replay`); `scripts/review_state.py finalize` applies the
+proof gate and completion rules below.
 
 ## Axes and classifications
 
@@ -154,8 +160,11 @@ enforced by `scripts/review_state.py`:
   confirming replay;
 - a maintainability blocker needs a `rule_anchor`; without one it becomes
   `major`;
-- results that miss the bar become `insufficient_evidence`, keep their audit
-  trail, and appear in `unproven_risks` instead of `results`.
+- blocking results that miss the bar become `insufficient_evidence`, keep
+  their audit trail, and appear in `unproven_risks` instead of `results`;
+- P3 results that were never run or traced, results replay contradicted, and
+  maintainability results with neither rule nor evidence are `rejected`;
+- a `traced` proof counts only with an allowed `execution_blocked` reason.
 
 Replay may set `rejected` or `insufficient_evidence`; those outcomes remain
 auditable but are not findings. Results receive stable IDs only after
@@ -165,7 +174,10 @@ retain separate IDs and reference one another through `cross_references`.
 ## Completion, verdict, and placement
 
 `complete` requires a current snapshot, exhaustive manifest, resolved required
-gates, one disposition for every planned check, verified results, and cleanup.
+gates, one finished disposition for every planned check and Behavior Proof
+(`not_checked` is not finished; `executed` needs evidence; `blocked` and
+`not_applicable` need a reason), a result for every failed Behavior Proof,
+verified results, and cleanup.
 `partial`, `blocked`, and `review_superseded` can report useful evidence but
 always produce `no_verdict`. A moving PR head may be refreshed twice; further
 movement produces `review_superseded`.

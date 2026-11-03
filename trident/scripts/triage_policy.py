@@ -52,6 +52,15 @@ STRESS_PROFILES = {
     "critical": ["boundary", "repetition", "concurrency", "failure-injection", "volume"],
 }
 
+# Each stress kind is its own Behavior Proof so the run shows whether it happened.
+STRESS_GOALS = {
+    "boundary": "the riskiest affected flow holds for empty, null, limit, off-by-one, ordering, unicode, timezone, and malformed inputs",
+    "repetition": "running the riskiest affected operation twice and N times (retry, redelivery, double submit, re-run) leaves exactly one effect",
+    "concurrency": "N concurrent executions of the riskiest affected operation keep the shared-state invariant",
+    "failure-injection": "one dependency failing, timing out, or returning partial data mid-operation leaves consistent state and a clear error",
+    "volume": "the riskiest affected flow holds at realistic large input or page counts (limits, totals, memory, timeouts)",
+}
+
 
 def present_signals(evidence: dict[str, Any]) -> set[str]:
     return {
@@ -188,6 +197,15 @@ def build_proofs(evidence: dict[str, Any], signals: set[str], risk: dict[str, st
                 "goal": goal,
                 "signal": signal,
                 "approval_critical": signal in critical_capabilities or correctness == "critical",
+                "disposition": "not_checked",
+            })
+    if has_source:
+        for kind in STRESS_PROFILES[correctness]:
+            proofs.append({
+                "proof_id": f"stress-{kind}",
+                "goal": STRESS_GOALS[kind],
+                "signal": "stress_profile",
+                "approval_critical": correctness in {"high", "critical"},
                 "disposition": "not_checked",
             })
     seen: set[str] = set()

@@ -39,6 +39,7 @@ class TriagePolicyTests(unittest.TestCase):
         self.assertFalse(proofs["affected-flow-e2e"]["approval_critical"])
         self.assertTrue(proofs["existing-tests-at-head"]["approval_critical"])
         self.assertEqual(plan["stress_profile"], [])
+        self.assertFalse([p for p in proofs if p.startswith("stress-")])
         self.assertNotIn("conditional-arbiter", plan["topology"])
 
     def test_risk_signals_activate_each_required_gate(self) -> None:
@@ -61,6 +62,9 @@ class TriagePolicyTests(unittest.TestCase):
         self.assertTrue(proofs["retry-idempotency"]["approval_critical"])
         self.assertTrue(proofs["affected-flow-e2e"]["approval_critical"])
         self.assertIn("concurrency", plan["stress_profile"])
+        for kind in plan["stress_profile"]:
+            self.assertIn(f"stress-{kind}", proofs)
+            self.assertTrue(proofs[f"stress-{kind}"]["approval_critical"])
 
     def test_deep_request_has_six_agent_ceiling_and_exact_ci_disposition(self) -> None:
         plan = build_plan(evidence(mode="pr", ci=True), requested_depth="deep")

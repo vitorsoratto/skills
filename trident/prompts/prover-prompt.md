@@ -28,16 +28,18 @@ Execution trust: {EXECUTION_TRUST}
 Work in this order:
 
 1. Prepare. If execution trust does not allow running this PR's code, skip to
-   step 5 and mark every proof `blocked: untrusted_fork_code`. Otherwise
-   install dependencies with the repository's own lockfile command and confirm
-   the related existing tests run at head. Record their result as the
-   `existing-tests-at-head` proof.
+   step 5 and mark every proof `blocked` with reason `untrusted_fork_code`.
+   Otherwise install dependencies with the repository's own lockfile command
+   and confirm the related existing tests run at head. Record their result as
+   the `existing-tests-at-head` proof, with the command and output excerpt.
 2. Prove the change works. For each affected flow in your scope, and one
    representative per equivalence class, drive it from its real entry point to
    its sink and observe the intended result. Stay inside the Impact Set.
-   Then run each required Behavior Proof and the stress profile on the riskiest flow.
-   Write proof files under {RUN_DIR}/proofs/{PROVER_ID}/ and copy them into
-   your worktree only to run them.
+   Then run each required Behavior Proof, including every `stress-<kind>`
+   proof, on the riskiest flow. Write proof files under
+   {RUN_DIR}/proofs/{PROVER_ID}/ and copy them into your worktree only to run
+   them. A proof that fails is a finding: emit a correctness result with the
+   same recipe and `behavior_proof_id` set to that proof.
 3. Hypothesize from evidence, not imagination. Use the risk questions, the
    safety facts, failed or surprising proof output, and the hazards. For each
    suspicion, write down the prediction: "running X shows Y; correct behavior
@@ -48,12 +50,20 @@ Work in this order:
    (create it with `git worktree add --detach` under {RUN_DIR}). Use a
    failure signature specific to the wrong outcome.
 5. When execution is impossible, trace the path from a real entry point
-   through both sides of every contract, record `level: traced` and the exact
-   `execution_blocked` reason. Never present a traced claim as executed.
+   through both sides of every contract, record `level: traced` and an
+   `execution_blocked` reason from the allowed list in
+   references/proof-protocol.md (`untrusted_fork_code`, `missing_runtime:`,
+   `missing_dependency:`, `external_service:`, `requires_credentials:`,
+   `requires_hardware:`, `no_disposable_data:`). Effort, complexity, or
+   confidence are not blockers. Never present a traced claim as executed.
 
 Report:
-- `behavior_proofs`: every proof you ran or could not run, with disposition,
-  outcome, the command, and a short output excerpt.
+- `behavior_proofs`: every proof assigned to you, with a finished disposition.
+  `executed` needs `evidence` (command plus output excerpt) and an `outcome`;
+  `blocked` and `not_applicable` need a `reason`; `affected-flow-e2e` and
+  `existing-tests-at-head` are never `not_applicable`. Do not return
+  `not_checked`: the orchestrator runs `scripts/stage_gate.py prove` on your
+  output and sends it back.
 - `results`: only proven or traced wrong outcomes, provisional, `id: null`,
   with claim, trigger, impact, anchors, correction direction, and `proof`
   (level, recipe, observed outcome at head and base).

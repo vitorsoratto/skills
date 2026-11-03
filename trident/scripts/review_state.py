@@ -11,6 +11,53 @@ DISPOSITIONS = {"executed", "satisfied_by_ci", "not_applicable", "not_checked", 
 BLOCKING_CORRECTNESS = {"P0", "P1", "P2"}
 PROOF_LEVELS = ("asserted", "anchored", "traced", "executed", "reproduced")
 RUN_PROOF_LEVELS = {"executed", "reproduced"}
+REPORTABLE_LEVELS = {"traced", "executed", "reproduced"}
+# The only reasons a proof may stop at `traced`. Anything else means "run it".
+EXECUTION_BLOCKERS = (
+    "untrusted_fork_code",
+    "missing_runtime:",
+    "missing_dependency:",
+    "external_service:",
+    "requires_credentials:",
+    "requires_hardware:",
+    "no_disposable_data:",
+)
+# Proofs every source change owes; they can be blocked with a reason, never not_applicable.
+MANDATORY_PROOFS = {"affected-flow-e2e", "existing-tests-at-head"}
+
+
+def valid_execution_blocker(reason: Any) -> bool:
+    return isinstance(reason, str) and any(
+        reason == prefix or (prefix.endswith(":") and reason.startswith(prefix) and len(reason) > len(prefix))
+        for prefix in EXECUTION_BLOCKERS
+    )
+
+
+def normalize_behavior_proofs(envelope: dict[str, Any]) -> dict[str, Any]:
+    """Refuse dispositions that claim work without evidence.
+
+    `executed` needs evidence (a command and what it showed). `blocked` and
+    `not_applicable` need a reason. Mandatory proofs are never not_applicable.
+    Anything that fails these rules becomes `not_checked`, which blocks completion.
+    """
+    state = deepcopy(envelope)
+    for proof in state.get("behavior_proofs") or []:
+        disposition = proof.get("disposition")
+        if disposition == "executed" and not proof.get("evidence"):
+            proof["disposition"] = "not_checked"
+            proof["reason"] = "marked executed without evidence"
+            proof.pop("outcome", None)
+        elif disposition in {"blocked", "not_applicable"} and not proof.get("reason"):
+            proof["disposition"] = "not_checked"
+            proof["reason"] = f"marked {disposition} without a reason"
+            proof.pop("outcome", None)
+        elif disposition == "not_applicable" and proof.get("proof_id") in MANDATORY_PROOFS:
+            proof["disposition"] = "not_checked"
+            proof["reason"] = f"{proof.get('proof_id')} is mandatory for source changes; use blocked with a reason"
+            proof.pop("outcome", None)
+        if proof.get("outcome") and proof.get("disposition") not in {"executed", "satisfied_by_ci"}:
+            proof["outcome"] = None
+    return state
 
 
 def _verified_results(envelope: dict[str, Any]) -> list[dict[str, Any]]:
@@ -32,10 +79,12 @@ def proof_gate(result: dict[str, Any]) -> str | None:
         replay = (proof.get("replay") or {}).get("state")
         if level in RUN_PROOF_LEVELS:
             return None if replay == "confirmed" else "run proof was not confirmed by an independent replay"
-        if level == "traced" and proof.get("execution_blocked") and replay == "confirmed":
-            return None
         if level == "traced":
-            return "traced proof without a recorded execution blocker and a confirming replay"
+            if not valid_execution_blocker(proof.get("execution_blocked")):
+                return "traced proof without an allowed execution blocker (" + ", ".join(EXECUTION_BLOCKERS) + ")"
+            if replay != "confirmed":
+                return "traced proof was not re-traced and confirmed by replay"
+            return None
         return f"proof level {level or 'missing'} is below executed"
     if axis == "maintainability" and result.get("classification") == "blocker" and not result.get("rule_anchor"):
         return "maintainability blocker cites no documented repository rule"
@@ -43,21 +92,75 @@ def proof_gate(result: dict[str, Any]) -> str | None:
 
 
 def apply_proof_gate(envelope: dict[str, Any]) -> dict[str, Any]:
-    """Downgrade unproven blockers so they inform the human without blocking the PR."""
+    """Drop what was never run, downgrade what was run but not confirmed.
+
+    - A correctness result whose replay mismatched or rejected it is `rejected`
+      at any classification: the experiment contradicted the claim.
+    - A non-blocking correctness result (P3) below `traced` is `rejected`: it
+      is unexecuted noise, not a risk worth a human's time.
+    - A blocking result (P0-P2) that was not run, not traced with an allowed
+      blocker, or not confirmed by replay becomes `insufficient_evidence` and
+      is rendered as an Unproven risk: it never blocks and never lets the
+      review approve.
+    - A maintainability result needs a `rule_anchor` or source evidence of a
+      concrete cost; a blocker without a rule becomes `major`.
+    """
     state = deepcopy(envelope)
     for item in state.get("results", []):
         if item.get("status") != "verified":
+            continue
+        axis = item.get("axis")
+        proof = item.get("proof") or {}
+        replay_state = (proof.get("replay") or {}).get("state")
+        if axis == "correctness":
+            if replay_state in {"mismatch", "rejected"}:
+                item.update({"status": "rejected", "id": None, "proof_gate": f"replay {replay_state}; dropped"})
+                continue
+            if proof.get("level") not in REPORTABLE_LEVELS and item.get("classification") not in BLOCKING_CORRECTNESS:
+                item.update({"status": "rejected", "id": None, "proof_gate": f"proof level {proof.get('level') or 'missing'} was never run or traced; dropped"})
+                continue
+        if axis == "maintainability" and not item.get("rule_anchor") and not item.get("evidence"):
+            item.update({"status": "rejected", "id": None, "proof_gate": "maintainability result cites neither a repository rule nor source evidence of a concrete cost; dropped"})
             continue
         reason = proof_gate(item)
         if not reason:
             continue
         item["proof_gate"] = reason
-        if item.get("axis") == "maintainability":
+        if axis == "maintainability":
             item["classification"] = "major"
         else:
             item["status"] = "insufficient_evidence"
             item["id"] = None
     return state
+
+
+def failed_proofs_without_result(envelope: dict[str, Any]) -> list[str]:
+    """Failed Behavior Proofs the Prover never turned into a correctness result."""
+    linked = set()
+    for item in envelope.get("results", []):
+        if item.get("behavior_proof_id"):
+            linked.add(item["behavior_proof_id"])
+        for ref in item.get("cross_references") or []:
+            if isinstance(ref, str) and ref.startswith("proof:"):
+                linked.add(ref.removeprefix("proof:"))
+    return [
+        str(proof.get("proof_id")) for proof in envelope.get("behavior_proofs") or []
+        if proof.get("outcome") == "failed" and proof.get("proof_id") not in linked
+    ]
+
+
+def proof_state(envelope: dict[str, Any]) -> list[str]:
+    """Completion blockers from Behavior Proofs: nothing planned may stay not_checked."""
+    blockers: list[str] = []
+    for proof in envelope.get("behavior_proofs") or []:
+        disposition = proof.get("disposition")
+        if disposition not in DISPOSITIONS:
+            blockers.append(f"behavior proof {proof.get('proof_id', 'unknown')} has no valid disposition")
+        elif disposition == "not_checked":
+            blockers.append(f"behavior proof {proof.get('proof_id', 'unknown')} is not_checked: {proof.get('reason') or 'no reason'}")
+    for proof_id in failed_proofs_without_result(envelope):
+        blockers.append(f"behavior proof {proof_id} failed but no correctness result carries behavior_proof_id={proof_id}")
+    return blockers
 
 
 def unproven_risks(envelope: dict[str, Any]) -> list[dict[str, Any]]:
@@ -111,7 +214,7 @@ def check_state(envelope: dict[str, Any]) -> tuple[bool, list[str]]:
 
 def compute_completion(envelope: dict[str, Any], *, cleanup_verified: bool | None = None) -> dict[str, Any]:
     """Derive Review Completion without deriving a verdict from stale state."""
-    state = deepcopy(envelope)
+    state = normalize_behavior_proofs(envelope)
     snapshot = state.get("review_snapshot") or state.get("snapshot") or {}
     refresh_count = int(snapshot.get("refresh_count", 0) or 0)
     if refresh_count > 2 or snapshot.get("current") == "review_superseded":
@@ -123,6 +226,9 @@ def compute_completion(envelope: dict[str, Any], *, cleanup_verified: bool | Non
             entry.get("treatment") for entry in manifest.get("entries", [])
         )
         checks_ok, check_blockers = check_state(state)
+        proof_blockers = proof_state(state)
+        checks_ok = checks_ok and not proof_blockers
+        check_blockers = check_blockers + proof_blockers
         gates = state.get("gates_resolved", (state.get("review_plan") or {}).get("gates_resolved", True))
         result_states = {item.get("status") for item in state.get("results", [])}
         results_verified = not result_states or result_states.issubset({"verified", "rejected", "insufficient_evidence"})
@@ -137,6 +243,9 @@ def compute_completion(envelope: dict[str, Any], *, cleanup_verified: bool | Non
             status = "complete"
     current = snapshot.get("current") is True and status != "review_superseded"
     checks_ok, check_blockers = check_state(state)
+    proof_blockers = proof_state(state)
+    checks_ok = checks_ok and not proof_blockers
+    check_blockers = check_blockers + proof_blockers
     manifest = state.get("coverage_manifest") or {}
     manifest_complete = manifest.get("status") == "complete" or bool(manifest.get("entries")) and all(
         entry.get("treatment") for entry in manifest.get("entries", [])

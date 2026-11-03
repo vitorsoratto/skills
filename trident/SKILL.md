@@ -16,6 +16,27 @@ Finalize -> Render**. Shapes live in
 [references/proof-protocol.md](references/proof-protocol.md). The research
 behind this design is in [references/evidence-basis.md](references/evidence-basis.md).
 
+## Hard rules
+
+These are checked by `scripts/stage_gate.py` and `scripts/review_state.py`,
+not by your own judgment. A review that skips one ends in `no_verdict`.
+
+- Each stage ends with its gate command passing. Fix the listed violations;
+  never edit an artifact to make a gate pass without doing the work.
+- A Behavior Proof is `executed` only with its command and an output excerpt.
+  `blocked` and `not_applicable` need a reason. `affected-flow-e2e` and
+  `existing-tests-at-head` are never `not_applicable`. `not_checked` at
+  finalize means the review is incomplete.
+- A proof stops at `traced` only for one of the allowed execution blockers
+  listed in [references/proof-protocol.md](references/proof-protocol.md).
+  "Too slow", "too complex", or "obvious from the code" are not blockers.
+- A correctness result exists only with a Proof Recipe or a traced path. A
+  failed Behavior Proof must become a result carrying its `behavior_proof_id`.
+- Replay is a separate agent. The orchestrator and the Prover that wrote a
+  recipe never replay it.
+- Blocking results need `replay.state: confirmed`. P3 results that were never
+  run or traced, and any result replay contradicted, are dropped at finalize.
+
 ## Campaign routing: review and fix until clean
 
 When the request alternates Trident and Trident Fix, invokes a review/fix loop,
@@ -116,12 +137,18 @@ Read [references/system-map.md](references/system-map.md).
    invariants, valid requirements, ADRs, repository standards, then heuristics.
 
 Use [prompts/context-prompt.md](prompts/context-prompt.md) as a subagent at
-deep depth or when the map is missing; otherwise do it yourself.
+deep depth or when the map is missing; otherwise do it yourself. Either way,
+write the `system_context` object to `$RUN_DIR/context.json` and run:
 
-**Completion:** every candidate usage is confirmed into a flow, covered by an
-equivalence class, or dismissed with a reason; every affected flow has an
-entry point, a sink, and either a way to exercise it or a recorded reason it
-cannot run; every section in `refresh` is stamped.
+```bash
+python3 scripts/system_map.py status --repo "$REPO_ROOT" --head "$HEAD_SHA" --triage "$RUN_DIR/triage.json" > "$RUN_DIR/map-status.json"
+python3 scripts/stage_gate.py context --triage "$RUN_DIR/triage.json" --context "$RUN_DIR/context.json" --map-status "$RUN_DIR/map-status.json"
+```
+
+**Completion:** the context gate passes: every candidate usage is in a flow's
+`paths`, in an equivalence class, or dismissed with a reason; every affected
+flow has an entry point, a sink, and `exercise` or `cannot_run_reason`; the
+brief has safety facts; every section in `refresh` is stamped.
 
 ## 4. Plan the proofs
 
@@ -137,10 +164,18 @@ its required proofs, and the stress profile. When a valid Requirement Source
 exists, map each mandatory acceptance criterion to a Behavior Proof.
 A required proof that cannot apply here (for example, a migration proof when
 the diff only mentions a schema in a comment) gets `not_applicable` with the
-evidence; that is a disposition, not a removal.
+evidence; that is a disposition, not a removal. The stress profile arrives as
+`stress-<kind>` proofs; assign them to the scope that owns the riskiest flow.
 
-**Completion:** every required proof and every affected flow is assigned to
-exactly one Prover scope.
+Write the scopes to `$RUN_DIR/scopes.json` as
+`[{prover_id, worktree, flows: [...], proofs: [...]}]` and run:
+
+```bash
+python3 scripts/stage_gate.py plan --plan "$RUN_DIR/plan.json" --scopes "$RUN_DIR/scopes.json" --context "$RUN_DIR/context.json"
+```
+
+**Completion:** the plan gate passes: every required proof and every affected
+flow is assigned to exactly one Prover scope, within the agent ceiling.
 
 ## 5. Prove
 
@@ -154,26 +189,45 @@ the Spec Gate is open and
 for deletions. Run the `thermo-nuclear-code-quality-review` skill as the
 Maintainability lens only when the Thermo Gate passes and the skill is installed.
 
-Merge Prover output: one result per root cause, all locations kept. Apply the
-signal policy in [references/proof-protocol.md](references/proof-protocol.md);
-drop anything that is not a proven or traced wrong outcome. Satisfy remaining
-required checks with exact-head CI or the narrowest repository-native command.
+Merge Prover output into `$RUN_DIR/envelope.json`: one result per root cause,
+all locations kept. Apply the signal policy in
+[references/proof-protocol.md](references/proof-protocol.md); drop anything
+that is not a proven or traced wrong outcome. Satisfy remaining required checks
+with exact-head CI or the narrowest repository-native command. Then run:
 
-**Completion:** every required proof and check has a disposition, and every
-provisional result carries a Proof Recipe or a traced path with its
+```bash
+python3 scripts/stage_gate.py prove --plan "$RUN_DIR/plan.json" --envelope "$RUN_DIR/envelope.json"
+```
+
+If a Prover returned `not_checked`, an `executed` proof without evidence, or a
+traced claim without an allowed blocker, send that Prover back to finish; do
+not relabel it yourself.
+
+**Completion:** the prove gate passes: every required proof has a finished
+disposition with evidence or a reason, every failed proof has a result, and
+every provisional result carries a Proof Recipe or an allowed
 `execution_blocked` reason.
 
 ## 6. Replay
 
 Create fresh detached worktrees at head and base. Write every recipe to
-`$RUN_DIR/proofs.json`. Dispatch [prompts/replay-prompt.md](prompts/replay-prompt.md):
-it audits each recipe without the Prover's reasoning, runs
-`scripts/replay_proofs.py`, re-traces traced claims, and sets each result to
-`verified`, `rejected`, or `insufficient_evidence`. Disagreements are settled
-by one more discriminating run, never by debate.
+`$RUN_DIR/proofs.json`. Dispatch [prompts/replay-prompt.md](prompts/replay-prompt.md)
+as a new agent that has not seen the Provers' output: it audits each recipe
+without the Prover's reasoning, runs `scripts/replay_proofs.py`, re-traces
+traced claims, and sets each result to `verified`, `rejected`, or
+`insufficient_evidence`. Disagreements are settled by one more discriminating
+run, never by debate. Run this even when there are zero results: the Replay
+agent still reruns `affected-flow-e2e` and `existing-tests-at-head` from their
+recorded commands, so an approval rests on two independent runs. Merge its
+envelope back into `$RUN_DIR/envelope.json` with `verification.independent: true`
+and run:
 
-**Completion:** every provisional result has a replay state, and every
-`verified` blocker shows `confirmed`.
+```bash
+python3 scripts/stage_gate.py replay --envelope "$RUN_DIR/envelope.json"
+```
+
+**Completion:** the replay gate passes: every result has a replay state, every
+`verified` blocker shows `confirmed`, and nothing is still provisional.
 
 ## 7. Refresh and finalize
 
@@ -187,12 +241,15 @@ until rendering ends. Then:
 python3 scripts/review_state.py finalize --input "$RUN_DIR/envelope.json" --cleanup-verified > "$RUN_DIR/final.json"
 ```
 
-`finalize` applies the proof gate (unproven blockers become Unproven risks),
-assigns `COR-*`/`MNT-*`/`SPEC-*`/`REM-*` IDs, computes completion, and derives
-the verdict: `request_changes` for a confirmed blocker; `comment` for
-non-blocking results, Unproven risks, or a failed Behavior Proof; `approve`
-only when the review is complete and every approval-critical proof held;
-`no_verdict` when incomplete.
+`finalize` applies the proof gate (unproven blockers become Unproven risks;
+unrun P3s and replay-contradicted claims are dropped), assigns
+`COR-*`/`MNT-*`/`SPEC-*`/`REM-*` IDs, computes completion, and derives the
+verdict: `request_changes` for a confirmed blocker; `comment` for non-blocking
+results or Unproven risks; `approve` only when the review is complete and
+every approval-critical proof held; `no_verdict` when incomplete, including
+any Behavior Proof left `not_checked`, `executed` without evidence, or
+`failed` without a result. Read `review_completion.blockers` and fix the
+cause; never hand-edit the envelope around it.
 
 **Completion:** `final.json` has a verdict, and cleanup is verified.
 
@@ -210,10 +267,12 @@ requires an explicit user request in the current task.
 
 ## Completion criteria
 
-Finish only when the snapshot is current, every manifest entry is accounted
-for, every planned check and proof has a disposition, every reported blocker
-was confirmed by replay, the System Map is stamped, rendering is complete, and
-temporary state is cleaned up.
+Finish only when all four stage gates passed, the snapshot is current, every
+manifest entry is accounted for, every planned check and proof has a finished
+disposition, every reported blocker was confirmed by replay, the System Map is
+stamped, `final.json` has a verdict other than `no_verdict` or names the
+blocker that prevents one, rendering is complete, and temporary state is
+cleaned up.
 
 ## References
 

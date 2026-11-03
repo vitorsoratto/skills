@@ -74,7 +74,7 @@ def main() -> int:
     ):
         if reference not in skill or not (ROOT / "references" / reference).exists():
             fail(f"unresolved skill reference: {reference}", failures)
-    for helper in ("collect_triage.py", "triage_policy.py", "review_state.py", "system_map.py", "replay_proofs.py"):
+    for helper in ("collect_triage.py", "triage_policy.py", "review_state.py", "system_map.py", "replay_proofs.py", "stage_gate.py"):
         if not (ROOT / "scripts" / helper).exists():
             fail(f"deterministic helper missing: {helper}", failures)
     for path in sorted(ROOT.rglob("*.md")):

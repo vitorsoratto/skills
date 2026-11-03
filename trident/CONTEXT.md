@@ -68,6 +68,14 @@ _Avoid_: Path overlap, blame guess
 A severe claim or approval-critical Behavior Proof that execution could not settle; it prevents approval without requesting changes.
 _Avoid_: Finding, ignored suspicion
 
+**Stage Gate**:
+A mechanical check (`scripts/stage_gate.py context|plan|prove|replay`) that a stage's artifacts satisfy its completion criteria; an agent's statement that a stage is done does not count.
+_Avoid_: Self-assessment, checklist tick
+
+**Allowed Execution Blocker**:
+One of the enumerated reasons a proof may stop at `traced` (untrusted fork code, missing runtime or dependency, external service, credentials, hardware, no disposable data); effort or confidence never qualifies.
+_Avoid_: Too complex, obvious from reading
+
 **Execution Trust Gate**:
 The rule that PR code runs only for same-repository PRs, local modes, or forks the user explicitly allowed.
 _Avoid_: Run everything, sandbox assumed

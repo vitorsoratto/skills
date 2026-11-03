@@ -14,11 +14,15 @@ ordering.
 - **Prove** runs Behavior Proofs for the affected flows and turns suspicions
   into Proof Recipes. Provers emit provisional results only.
 - **Replay** re-runs every recipe in fresh worktrees without the prover's
-  reasoning. It is the only verification stage. There is no judge or debate
-  stage: disagreements are settled by a discriminating run, or the result is
-  `insufficient_evidence`.
+  reasoning, as a separate agent. It is the only verification stage. There is
+  no judge or debate stage: disagreements are settled by a discriminating run,
+  or the result is `insufficient_evidence`.
 - **Finalize** applies the proof gate, IDs, completion, and verdict through
   `scripts/review_state.py finalize`.
+
+Each stage ends with `scripts/stage_gate.py <stage>` passing on the run
+artifacts. The gates are the completion criteria; an agent's own statement
+that a stage is done does not count.
 
 ## Required gates
 

@@ -46,7 +46,9 @@ unrelated dimensions. `pr` mode alone is not a deep signal.
 ## Stress profile
 
 The correctness risk level selects the stress the Prover applies to the
-riskiest affected flow (see [proof-protocol.md](proof-protocol.md)):
+riskiest affected flow (see [proof-protocol.md](proof-protocol.md)). Each kind
+is emitted as its own required proof, `stress-<kind>`, approval-critical at
+`high` and `critical`:
 
 | Correctness risk | Stress profile |
 |---|---|

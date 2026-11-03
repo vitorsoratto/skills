@@ -22,10 +22,34 @@ pushed. Push it as far as is cheap and say where it stopped.
 | `executed` | A script or test calls the real code and fails loud when the claim is true. | Yes, once replay confirms |
 | `reproduced` | The wrong outcome was observed through the running app, job, CLI, or API entry point. | Yes, once replay confirms |
 
-`scripts/review_state.py` enforces this: a blocking correctness result whose
-proof is below the bar is downgraded to `insufficient_evidence` and rendered as
-an **Unproven risk**. Unproven risks never request changes and never let the
-review approve.
+`scripts/review_state.py` enforces this at finalize:
+
+- a blocking correctness result (P0-P2) whose proof is below the bar becomes
+  `insufficient_evidence` and is rendered as an **Unproven risk**. Unproven
+  risks never request changes and never let the review approve;
+- a P3 that was never run or traced is dropped (`rejected`): unexecuted
+  non-blocking claims are noise;
+- any result whose replay state is `mismatch` or `rejected` is dropped: the
+  experiment contradicted it;
+- a maintainability result with neither a `rule_anchor` nor source evidence of
+  a concrete cost is dropped; a blocker without a rule becomes `major`.
+
+### Allowed execution blockers
+
+A proof may stop at `traced` only when `execution_blocked` is one of:
+
+| Reason | Meaning |
+|---|---|
+| `untrusted_fork_code` | the Execution Trust Gate forbids running this PR |
+| `missing_runtime: <what>` | the language runtime, emulator, or browser is not installable here |
+| `missing_dependency: <what>` | a required service or package cannot be installed or started locally |
+| `external_service: <what>` | the path needs a third-party system with no sandbox or recorded fixture |
+| `requires_credentials: <what>` | the path needs credentials the review must not use |
+| `requires_hardware: <what>` | the path needs a device or sensor |
+| `no_disposable_data: <what>` | the only data that reaches the path is production or shared data |
+
+Effort, complexity, confidence in reading, or time are not blockers. A traced
+claim with any other reason is treated as unproven.
 
 ## Proof Recipe
 
@@ -94,13 +118,27 @@ and for one representative of each equivalence class:
 | `failure-injection` | Make one dependency fail, time out, or return partial data mid-operation; check rollback, retry, and the user-visible error. |
 | `volume` | Run with a realistic large input or page count; check limits, pagination totals, memory, and timeouts. |
 
+The stress profile arrives from the Review Plan as one Behavior Proof per
+kind (`stress-boundary`, `stress-repetition`, ...), so each kind gets its own
+disposition and evidence.
+
 Each Behavior Proof records `proof_id`, `flow`, `disposition`
 (`executed|satisfied_by_ci|not_applicable|not_checked|blocked`), `outcome`
 (`held|failed|null`), `evidence` (command plus a short output excerpt or
-artifact path), `approval_critical`, and `affected_paths`. A failed Behavior
-Proof becomes a correctness result with the same recipe as its proof. An
-approval-critical proof that is `blocked` or `not_checked` becomes an Unproven
-risk and prevents approval.
+artifact path), `approval_critical`, and `affected_paths`. Disposition rules,
+enforced by `scripts/review_state.py` and `scripts/stage_gate.py`:
+
+- `executed` requires `evidence`; without it the proof reverts to `not_checked`;
+- `blocked` and `not_applicable` require `reason`;
+- `affected-flow-e2e` and `existing-tests-at-head` are never `not_applicable`;
+  when they cannot run, use `blocked` with an allowed execution blocker;
+- `not_checked` is a planning state only; at finalize it blocks completion and
+  the review ends in `no_verdict`.
+
+A failed Behavior Proof becomes a correctness result with the same recipe as
+its proof and `behavior_proof_id` set to the proof; a failed proof without a
+result blocks completion. An approval-critical proof that is `blocked` becomes
+an Unproven risk and prevents approval.
 
 For concurrency, ordering, or state-machine changes where tests cannot
 enumerate interleavings, use the repository's model checker or formal spec when
@@ -115,9 +153,12 @@ Replay replaces reading-based verification and the old judge stage.
 1. Create fresh detached worktrees at the reviewed head and, for differential
    recipes, at the base. Never reuse a prover's worktree.
 2. A fresh Replay agent receives only each claim, its anchors, and its recipe,
-   not the prover's reasoning. It audits each recipe against the rules above
-   (real path, no mocked suspect, assertion matches the claim, specific
-   signature) and rejects recipes that fail the audit.
+   not the prover's reasoning. It is always a separate agent: neither the
+   orchestrator nor a Prover replays. It audits each recipe against the rules
+   above (real path, no mocked suspect, assertion matches the claim, specific
+   signature) and rejects recipes that fail the audit. It runs even with zero
+   claims, rerunning `affected-flow-e2e` and `existing-tests-at-head` from
+   their recorded commands, and sets `verification.independent: true`.
 3. Run every surviving recipe:
 
    ```bash

@@ -43,8 +43,14 @@ Do this:
 Return, in this order:
 - `system_map_updates`: replacement Markdown per refreshed section, plus the
   anchor list for each (repository-relative paths, directories, or globs).
-- `impact_set`: flows, equivalence classes with their representative, and dismissed usages with reasons.
-- `change_context_brief`: at most about 60 lines.
+- `system_context` in the canonical shape: `change_context_brief` (at most
+  about 60 lines), `safety_facts`, `affected_flows` (each with `entry_point`,
+  `sink`, `changed_symbols`, `paths`, and `exercise` or `cannot_run_reason`),
+  `impact_set` (`equivalence_classes` with `shared_property`,
+  `dismissed_usages` with reasons, `shared_units` for too-common symbols),
+  and `refreshed_sections`. Every file in `impact_candidates.usage_files`
+  must appear in a flow's `paths`, in an equivalence class, or in
+  `dismissed_usages`; `scripts/stage_gate.py context` checks this.
 - `operations_unverified`: commands you expect to work but did not run.
 
 Never edit the repository, start services against shared data, or print

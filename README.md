@@ -28,6 +28,14 @@ Entrevista objetiva para o suporte transformar uma solicitação em um ticket cl
 npx skills add vitorsoratto/skills --skill criar-ticket
 ```
 
+### implement
+
+Implement what the conversation settled (a grill spec or plain chat) as an orchestrator: writes a brief, splits the work into blocks, routes each block to the right model per role, and verifies before closing. Say "economia" for a lean, low-token run.
+
+```bash
+npx skills add vitorsoratto/skills --skill implement
+```
+
 ## Install
 
 List all available skills:
